@@ -545,9 +545,8 @@ export default function App() {
 
           <button
             onClick={() => fileInputRef.current?.click()}
-            className={`px-2.5 py-1 rounded border text-[10px] font-bold cursor-pointer flex items-center gap-1 ${
-              uploadedImage ? 'border-cyan-400 bg-cyan-950/60 text-cyan-300' : 'border-slate-700 text-slate-400'
-            }`}
+            className={`px-2.5 py-1 rounded border text-[10px] font-bold cursor-pointer flex items-center gap-1 ${uploadedImage ? 'border-cyan-400 bg-cyan-950/60 text-cyan-300' : 'border-slate-700 text-slate-400'
+              }`}
           >
             <Upload className="w-3 h-3" /> Upload Image
           </button>
@@ -563,9 +562,8 @@ export default function App() {
           />
           <button
             onClick={startCamera}
-            className={`px-2.5 py-1 rounded border text-[10px] font-bold cursor-pointer ${
-              cameraActive ? 'border-cyan-400 bg-cyan-950/60 text-cyan-300' : 'border-slate-700 text-slate-400'
-            }`}
+            className={`px-2.5 py-1 rounded border text-[10px] font-bold cursor-pointer ${cameraActive ? 'border-cyan-400 bg-cyan-950/60 text-cyan-300' : 'border-slate-700 text-slate-400'
+              }`}
           >
             Live Cam
           </button>
@@ -636,9 +634,8 @@ export default function App() {
           <div className="flex gap-2">
             <button
               onClick={toggleMicListening}
-              className={`px-3 py-2 rounded border text-xs font-bold flex items-center gap-1.5 ${
-                isListeningMic ? 'border-rose-500 bg-rose-950 text-rose-300' : 'border-slate-700 text-slate-300'
-              }`}
+              className={`px-3 py-2 rounded border text-xs font-bold flex items-center gap-1.5 ${isListeningMic ? 'border-rose-500 bg-rose-950 text-rose-300' : 'border-slate-700 text-slate-300'
+                }`}
             >
               <Mic className="w-4 h-4" /> MIC
             </button>
@@ -748,7 +745,7 @@ export default function App() {
                 {latestClaim.guardrailStatus === 'HELD_WAITING_VOICE_AUTH' ? (
                   <div className="pt-1 flex flex-col gap-1.5">
                     <div className="text-[10px] text-amber-400 font-bold">
-                      ⚠ ZERO-TRUST GUARDRAIL: Financial Impact &gt;$100 USD Held
+                      ⚠ ZERO-TRUST GUARDRAIL: Financial Action Held (-${Number(latestClaim.amountUsd).toFixed(2)} USD)
                     </div>
                     <button
                       onClick={authorizeGuardrailClaim}
