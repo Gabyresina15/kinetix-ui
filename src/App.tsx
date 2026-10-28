@@ -46,7 +46,7 @@ interface ExecutionStep {
 }
 
 const DEFAULT_PROMPT =
-  'El cooler de torre con tubos de cobre vino con una aleta golpeada, abrí reclamo al proveedor. Sumá al stock los dos módulos de memoria RAM y el disco SSD M.2. Armame la foto de estudio para la fuente de poder modular y recalculá precios con 32% de margen.';
+  'La pinza vino rota, abrí reclamo. Sumá al stock las dos memorias RAM y armá foto de estudio para la placa de video. Recalculá precios con 30% de margen.';
 
 const INITIAL_STEPS: ExecutionStep[] = [
   { id: 'edge_pii', title: 'Edge Cognitive Filter & PII Redaction', model: 'muse-spark-open-1026', status: 'PENDING' },
@@ -61,7 +61,6 @@ const INITIAL_STEPS: ExecutionStep[] = [
 const INITIAL_HARDWARE_INVENTORY = [
   { sku: 'SKU-DDR5-32GB-KIT', name: 'Fury Beast DDR5 32GB (2x16GB) Black', stock: 14, sellPriceUsd: 158.0 },
   { sku: 'SKU-NVME-2TB-GEN4', name: 'M.2 NVMe PCIe 4.0 SSD 2TB', stock: 8, sellPriceUsd: 185.0 },
-  { sku: 'SKU-RTX-TRIPLE-OC', name: 'GeForce RTX Triple-Fan OC Edition', stock: 5, sellPriceUsd: 840.0 },
 ];
 
 export default function App() {
@@ -121,7 +120,6 @@ export default function App() {
     setSteps((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   };
 
-  // Captura optimizada a 960x540 (~75KB) para no superar nunca el bodyLimit de Fastify
   const captureFrameBase64 = (): string | null => {
     try {
       const canvas = canvasRef.current;
@@ -161,8 +159,14 @@ export default function App() {
       videoRef.current.pause();
     }
 
+    // FULL CLEAN START — never keep previous run data
     setMasks([]);
     setReasoningTrace('');
+    setLatestClaim(null);
+    setLatestCatalog(null);
+    setVmExecution(null);
+    setInventory([]);
+    setTelemetry({ glimmerMs: 0, samMs: 0, sparkMs: 0, tokensSavedPct: 68, piiRedacted: 0 });
     setSteps(INITIAL_STEPS.map((s) => ({ ...s, status: 'PENDING', detail: undefined })));
     updateStep('edge_pii', { status: 'RUNNING' });
 
@@ -277,7 +281,6 @@ export default function App() {
             }
 
             if (tool === 'mutate_inventory' && result) {
-              // Auto-Upsert en el frontend: actualiza si existe o lo inserta si es nuevo
               setInventory((prev) => {
                 const exists = prev.some((item) => item.sku === result.sku);
                 if (exists) {
@@ -322,6 +325,12 @@ export default function App() {
                 status: 'MUTATED',
                 detail: `New margin price in VM: $${result.finalPrice} USD`,
               });
+            }
+          }
+
+          if (eventName === 'ORCHESTRATION_COMPLETE' && payload.storeState) {
+            if (Array.isArray(payload.storeState.inventory)) {
+              setInventory(payload.storeState.inventory);
             }
           }
         }
@@ -463,19 +472,17 @@ export default function App() {
 
           <button
             onClick={() => setUseHardwareBench(true)}
-            className={`px-2.5 py-1 rounded border text-[10px] font-bold cursor-pointer ${useHardwareBench
-              ? 'border-cyan-400 bg-cyan-950/60 text-cyan-300'
-              : 'border-slate-700 text-slate-400'
-              }`}
+            className={`px-2.5 py-1 rounded border text-[10px] font-bold cursor-pointer ${
+              useHardwareBench ? 'border-cyan-400 bg-cyan-950/60 text-cyan-300' : 'border-slate-700 text-slate-400'
+            }`}
           >
             Bench Scene
           </button>
           <button
             onClick={startCamera}
-            className={`px-2.5 py-1 rounded border text-[10px] font-bold cursor-pointer ${!useHardwareBench && cameraActive
-              ? 'border-cyan-400 bg-cyan-950/60 text-cyan-300'
-              : 'border-slate-700 text-slate-400'
-              }`}
+            className={`px-2.5 py-1 rounded border text-[10px] font-bold cursor-pointer ${
+              !useHardwareBench && cameraActive ? 'border-cyan-400 bg-cyan-950/60 text-cyan-300' : 'border-slate-700 text-slate-400'
+            }`}
           >
             Live Cam
           </button>
@@ -496,289 +503,146 @@ export default function App() {
             <span className="flex items-center gap-2 font-semibold text-slate-200">
               <Camera className="w-4 h-4 text-cyan-400" /> WORKSPACE SPATIAL FEED (SAM 3.1 N-GRAPH)
             </span>
-            <span
-              className={`px-2 py-0.5 rounded font-bold flex items-center gap-1.5 ${isFrozen
-                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50 shadow-[0_0_12px_rgba(245,158,11,0.25)]'
-                : 'text-emerald-400'
-                }`}
-            >
-              {isFrozen ? (
-                <>
-                  <Lock className="w-3 h-3" /> FRAME LOCKED (SEGMENTING)
-                </>
-              ) : (
-                '● READY (10 OBJECTS IN FOV)'
-              )}
+            <span className="text-[10px] px-2 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-500/50 font-bold">
+              {isFrozen ? 'FRAME LOCKED (SEGMENTING)' : 'LIVE FEED'}
             </span>
           </div>
 
-          <div
-            className={`relative flex-1 bg-[#050608] rounded overflow-hidden flex items-center justify-center transition-all duration-300 ${isFrozen
-              ? 'border-2 border-amber-400/80 shadow-[inset_0_0_30px_rgba(245,158,11,0.15)]'
-              : 'border border-slate-800'
-              }`}
-          >
-            {useHardwareBench && (
+          <div className="relative flex-1 bg-black rounded border border-slate-800 overflow-hidden">
+            {useHardwareBench || !cameraActive ? (
               <img
                 src="/hardware-bench.jpg"
-                alt="Hardware Bench"
-                className={`w-full h-full object-contain transition-all duration-300 ${isFrozen ? 'brightness-90 contrast-110' : 'opacity-95'
-                  }`}
+                alt="Bench"
+                className="w-full h-full object-cover"
               />
+            ) : (
+              <video ref={videoRef} autoPlay playsInline muted className="w-full h-full object-cover" />
             )}
 
-            {cameraActive && !useHardwareBench && (
-              <video
-                ref={videoRef}
-                autoPlay
-                playsInline
-                muted
-                className={`w-full h-full object-cover transition-all duration-300 ${isFrozen ? 'brightness-75 contrast-125' : 'opacity-90'
-                  }`}
-              />
-            )}
-
-            {flashEffect && <div className="absolute inset-0 bg-white/60 z-30 pointer-events-none" />}
-
-            {isFrozen && (
-              <div className="absolute top-3 right-3 z-20 bg-amber-950/90 border border-amber-400/70 text-amber-300 text-[10px] font-bold px-2.5 py-1 rounded tracking-wider uppercase shadow-lg">
-                SNAPSHOT LOCKED // N-OBJECT GRAPH ACTIVE
-              </div>
-            )}
-
-            {!cameraActive && !useHardwareBench && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 text-xs gap-1.5 pointer-events-none">
-                <Scan className="w-6 h-6 text-slate-700 mb-1" />
-                <span className="tracking-widest font-semibold text-slate-400">
-                  [ SYNTHETIC WORKSPACE COUNTERTOP ]
-                </span>
-              </div>
-            )}
-
-            {/* RENDERIZADO DE LAS N MÁSCARAS DINÁMICAS (SIN CRASH) */}
-            {masks.map((mask) => {
-              const [x, y, w, h] = mask.bbox || [0, 0, 0.1, 0.1];
-              const style: React.CSSProperties = {
-                left: `${x * 100}%`,
-                top: `${y * 100}%`,
-                width: `${w * 100}%`,
-                height: `${h * 100}%`,
-              };
-
-              if (mask.isSensitivePII) {
-                return (
-                  <div
-                    key={mask.id}
-                    style={{
-                      ...style,
-                      backgroundImage:
-                        'repeating-linear-gradient(45deg, rgba(6,78,59,0.55) 0px, rgba(6,78,59,0.55) 10px, rgba(2,44,34,0.85) 10px, rgba(2,44,34,0.85) 20px)',
-                    }}
-                    className="absolute backdrop-blur-xl border-2 border-emerald-400 rounded-md flex flex-col items-center justify-center p-2 z-20 shadow-[0_0_25px_rgba(16,185,129,0.4)] transition-all duration-300"
-                  >
-                    <div className="flex items-center gap-1 bg-slate-950/95 border border-emerald-400/80 px-2 py-0.5 rounded">
-                      <ShieldAlert className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                      <span className="text-[10px] font-extrabold text-emerald-300">[PII REDACTED]</span>
-                    </div>
-                  </div>
-                );
-              }
-
-              const rawStatus = mask.assignedActionStatus || 'IDLE_OBSERVED';
-
-              const styleMap: Record<
-                string,
-                { box: string; badge: string; label: string; isActive: boolean }
-              > = {
-                QUARANTINED: {
-                  box: 'border-2 border-rose-500 bg-rose-500/25 text-rose-200 shadow-[0_0_25px_rgba(244,63,94,0.45)] z-20',
-                  badge: 'bg-rose-950/95 border-rose-400 text-rose-200',
-                  label: `QUARANTINE // ${mask.label || mask.id}`,
-                  isActive: true,
-                },
-                STOCK_MUTATED: {
-                  box: 'border-2 border-emerald-400 bg-emerald-400/25 text-emerald-200 shadow-[0_0_25px_rgba(52,211,153,0.45)] z-20',
-                  badge: 'bg-emerald-950/95 border-emerald-400 text-emerald-200',
-                  label: `STOCK INBOUND // ${mask.label || mask.id}`,
-                  isActive: true,
-                },
-                CATALOG_SYNTH: {
-                  box: 'border-2 border-cyan-400 bg-cyan-400/25 text-cyan-200 shadow-[0_0_25px_rgba(34,211,238,0.45)] z-20',
-                  badge: 'bg-cyan-950/95 border-cyan-400 text-cyan-200',
-                  label: `8K STUDIO // ${mask.label || mask.id}`,
-                  isActive: true,
-                },
-                IDLE_OBSERVED: {
-                  box: 'border border-slate-400/50 bg-slate-900/15 text-slate-300 z-10',
-                  badge: 'bg-slate-950/85 border-slate-600 text-slate-300',
-                  label: mask.label || mask.id,
-                  isActive: false,
-                },
-                IDLE: {
-                  box: 'border border-slate-400/50 bg-slate-900/15 text-slate-300 z-10',
-                  badge: 'bg-slate-950/85 border-slate-600 text-slate-300',
-                  label: mask.label || mask.id,
-                  isActive: false,
-                },
-              };
-
-              const styleConfig = styleMap[rawStatus] || styleMap.IDLE_OBSERVED;
-
+            {masks.map((m) => {
+              const [x, y, w, h] = m.bbox;
+              const color =
+                m.assignedActionStatus === 'QUARANTINED'
+                  ? 'border-rose-500'
+                  : m.assignedActionStatus === 'STOCK_MUTATED'
+                    ? 'border-emerald-400'
+                    : m.assignedActionStatus === 'CATALOG_SYNTH'
+                      ? 'border-cyan-400'
+                      : 'border-slate-500/60';
               return (
                 <div
-                  key={mask.id}
-                  style={style}
-                  className={`absolute rounded-md transition-all duration-300 ${styleConfig.box}`}
+                  key={m.id}
+                  className={`absolute border-2 ${color} rounded pointer-events-none`}
+                  style={{
+                    left: `${x * 100}%`,
+                    top: `${y * 100}%`,
+                    width: `${w * 100}%`,
+                    height: `${h * 100}%`,
+                  }}
                 >
-                  <div
-                    className={`text-[9px] font-bold px-1.5 py-0.5 inline-flex items-center gap-1 border-b border-r rounded-br shadow ${styleConfig.badge}`}
-                  >
-                    {styleConfig.isActive && (
-                      <span className="h-1.5 w-1.5 rounded-full bg-current animate-ping" />
-                    )}
-                    <span className="truncate max-w-[160px]">{styleConfig.label}</span>
+                  <div className="absolute -top-5 left-0 text-[9px] bg-black/80 px-1 rounded text-white whitespace-nowrap">
+                    {m.label || m.id}
                   </div>
                 </div>
               );
             })}
           </div>
 
-          <div className="bg-[#090A0F] border border-slate-800 rounded p-3 flex flex-col gap-2.5">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="text-[10px] text-slate-500 font-bold uppercase">Command:</span>
-              <input
-                type="text"
-                value={voiceText}
-                onChange={(e) => setVoiceText(e.target.value)}
-                placeholder="Escribí el comando acá o usá MIC..."
-                className="flex-1 bg-[#0c0e14] border border-slate-800 text-cyan-300 text-sm px-3 py-2 rounded outline-none focus:border-cyan-500"
-              />
-            </div>
-            <div className="flex gap-2">
-              <button
-                onClick={toggleMicListening}
-                disabled={isRunning}
-                className={`px-3 py-3 rounded border font-bold text-xs flex items-center gap-1.5 cursor-pointer transition ${isListeningMic
-                  ? 'bg-rose-500/20 border-rose-400 text-rose-300 animate-pulse'
-                  : 'bg-slate-900 hover:bg-slate-800 border-slate-700 text-slate-200'
-                  }`}
-              >
-                <Mic className="w-4 h-4 text-cyan-400" />
-                {isListeningMic ? 'LISTENING...' : 'MIC'}
-              </button>
-
-              <button
-                onClick={triggerOrchestration}
-                disabled={isRunning}
-                className={`flex-1 py-3 rounded font-extrabold text-xs tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer ${isRunning
-                  ? 'bg-amber-500/20 border border-amber-400 text-amber-300 shadow-[0_0_20px_rgba(245,158,11,0.2)]'
-                  : 'bg-cyan-400 hover:bg-cyan-300 text-slate-950 shadow-[0_0_20px_rgba(34,211,238,0.3)]'
-                  }`}
-              >
-                {isRunning ? (
-                  <>
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    EXECUTING SPATIAL DAG... (STREAMING SSE)
-                  </>
-                ) : (
-                  <>
-                    <Play className="w-4 h-4 fill-current" />
-                    TRIGGER GOLDEN PATH (SPACEBAR / CLICK)
-                  </>
-                )}
-              </button>
-            </div>
+          <div className="flex gap-2">
+            <button
+              onClick={toggleMicListening}
+              className={`px-3 py-2 rounded border text-xs font-bold flex items-center gap-1.5 ${
+                isListeningMic ? 'border-rose-500 bg-rose-950 text-rose-300' : 'border-slate-700 text-slate-300'
+              }`}
+            >
+              <Mic className="w-4 h-4" /> MIC
+            </button>
+            <button
+              onClick={triggerOrchestration}
+              disabled={isRunning}
+              className="flex-1 py-2 rounded bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 font-extrabold text-xs flex items-center justify-center gap-2"
+            >
+              {isRunning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
+              {isRunning ? 'PROCESSING...' : 'TRIGGER GOLDEN PATH (SPACEBAR / CLICK)'}
+            </button>
           </div>
+
+          <textarea
+            value={voiceText}
+            onChange={(e) => setVoiceText(e.target.value)}
+            className="w-full bg-[#090A0F] border border-slate-800 rounded p-2 text-[11px] text-slate-300 resize-none h-16"
+          />
         </section>
 
-        <section className="col-span-3 border border-slate-800 bg-[#0D1017] rounded-lg p-3 flex flex-col gap-3 overflow-hidden">
-          <div className="text-xs font-semibold text-slate-200 border-b border-slate-800 pb-2 flex items-center gap-2">
-            <Cpu className="w-4 h-4 text-amber-400" /> AGENT EXECUTION DAG (SSE)
-          </div>
-
-          <div className="flex-1 relative pl-4 border-l-2 border-slate-800 space-y-2.5 overflow-y-auto pr-1">
-            {steps.map((step) => {
-              const badgeColors = {
-                PENDING: 'border-slate-800 bg-[#090A0F] text-slate-500',
-                RUNNING:
-                  'border-cyan-400 bg-cyan-950/50 text-cyan-200 shadow-[0_0_15px_rgba(34,211,238,0.2)] animate-pulse',
-                MUTATED: 'border-emerald-500/70 bg-emerald-950/25 text-emerald-300',
-              };
-
-              return (
-                <div
-                  key={step.id}
-                  className={`p-2 rounded border text-xs transition-all ${badgeColors[step.status]}`}
-                >
-                  <div className="flex items-center justify-between font-bold mb-0.5">
-                    <span>{step.title}</span>
-                    {step.status === 'RUNNING' && <Loader2 className="w-3.5 h-3.5 text-cyan-400 animate-spin" />}
-                    {step.status === 'MUTATED' && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />}
-                  </div>
-                  <div className="text-[10px] text-slate-400 flex justify-between">
-                    <span>{step.model}</span>
-                    {step.latencyMs && <span className="text-cyan-400 font-bold">{step.latencyMs}ms</span>}
-                  </div>
-                  {step.detail && (
-                    <div className="mt-1 pt-1 border-t border-slate-800/80 text-[10px] text-white">
-                      {step.detail}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-
-          <div className="bg-[#050608] border border-amber-500/40 rounded p-2.5 text-[10px]">
-            <div className="flex items-center gap-1.5 text-amber-400 font-bold mb-1">
-              <BrainCircuit className="w-3.5 h-3.5" />
-              <span>MUSE SPARK OPEN REASONING TRACE</span>
-            </div>
-            <div className="text-slate-300 leading-relaxed max-h-24 overflow-y-auto whitespace-pre-line">
-              {reasoningTrace || 'Awaiting spatial coordinates & voice stream...'}
-            </div>
-          </div>
-        </section>
-
-        <section className="col-span-4 flex flex-col gap-3 overflow-y-auto">
+        <section className="col-span-4 flex flex-col gap-3 overflow-auto">
           <div className="border border-slate-800 bg-[#0D1017] rounded-lg p-3">
             <div className="text-xs font-semibold text-slate-200 border-b border-slate-800 pb-2 mb-2 flex items-center gap-2">
-              <Package className="w-4 h-4 text-emerald-400" /> LIVE INVENTORY STATE (AUTO-UPSERT)
+              <BrainCircuit className="w-4 h-4 text-amber-400" /> AGENT EXECUTION DAG (SSE)
             </div>
             <div className="space-y-2">
-              {inventory.map((item) => (
-                <div
-                  key={item.sku}
-                  className="bg-[#090A0F] border border-slate-800 p-2.5 rounded flex items-center justify-between text-xs"
-                >
-                  <div>
-                    <div className="font-bold text-white">{item.name}</div>
-                    <div className="text-[10px] text-slate-500">{item.sku}</div>
+              {steps.map((step) => (
+                <div key={step.id} className="border border-slate-800/80 rounded p-2 text-[11px]">
+                  <div className="flex justify-between items-center">
+                    <span className="font-semibold text-slate-200">{step.title}</span>
+                    {step.status === 'MUTATED' ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    ) : step.status === 'RUNNING' ? (
+                      <Loader2 className="w-4 h-4 text-cyan-400 animate-spin" />
+                    ) : (
+                      <div className="w-3 h-3 rounded-full border border-slate-600" />
+                    )}
                   </div>
-                  <div className="text-right">
-                    <div className="text-emerald-400 font-bold">{item.stock} units</div>
-                    <div className="text-[11px] text-cyan-300 font-semibold">
-                      ${Number(item.sellPriceUsd).toFixed(2)} USD
-                    </div>
-                  </div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">{step.model}</div>
+                  {step.detail && <div className="text-[10px] text-slate-300 mt-1">{step.detail}</div>}
+                  {step.latencyMs !== undefined && (
+                    <div className="text-[10px] text-slate-500 mt-0.5">{step.latencyMs}ms</div>
+                  )}
                 </div>
               ))}
             </div>
           </div>
 
+          <div className="border border-slate-800 bg-[#0D1017] rounded-lg p-3 flex-1">
+            <div className="text-xs font-semibold text-slate-200 border-b border-slate-800 pb-2 mb-2 flex items-center gap-2">
+              <Activity className="w-4 h-4 text-cyan-400" /> MUSE SPARK OPEN REASONING TRACE
+            </div>
+            <pre className="text-[10px] text-slate-400 whitespace-pre-wrap leading-relaxed max-h-48 overflow-auto">
+              {reasoningTrace || 'Waiting for spatial reasoning...'}
+            </pre>
+          </div>
+        </section>
+
+        <section className="col-span-3 flex flex-col gap-3 overflow-auto">
           <div className="border border-slate-800 bg-[#0D1017] rounded-lg p-3">
-            <div className="text-xs font-semibold text-slate-200 border-b border-slate-800 pb-2 mb-2 flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-rose-400" /> SUPPLIER CLAIM & ZERO-TRUST GUARDRAIL
-              </span>
-              {latestClaim?.mongoId && (
-                <span className="text-[9px] text-emerald-400 font-mono bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-800">
-                  DB_TX: {latestClaim.mongoId.slice(0, 10)}...
-                </span>
+            <div className="text-xs font-semibold text-slate-200 border-b border-slate-800 pb-2 mb-2 flex items-center gap-2">
+              <Package className="w-4 h-4 text-emerald-400" /> LIVE INVENTORY STATE (AUTO-UPSERT)
+            </div>
+            <div className="space-y-1.5">
+              {inventory.length === 0 ? (
+                <div className="text-[11px] text-slate-600 py-3 text-center">No inventory mutations yet</div>
+              ) : (
+                inventory.map((item) => (
+                  <div key={item.sku} className="flex justify-between text-[11px] border-b border-slate-800/60 pb-1">
+                    <div>
+                      <div className="text-slate-200 font-medium">{item.name}</div>
+                      <div className="text-slate-500 text-[10px]">{item.sku}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-emerald-400 font-bold">{item.stock} units</div>
+                      <div className="text-slate-400 text-[10px]">${item.sellPriceUsd?.toFixed(2)}</div>
+                    </div>
+                  </div>
+                ))
               )}
             </div>
+          </div>
+
+          <div className="border border-slate-800 bg-[#0D1017] rounded-lg p-3">
+            <div className="text-xs font-semibold text-slate-200 border-b border-slate-800 pb-2 mb-2 flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 text-rose-400" /> SUPPLIER CLAIM & ZERO-TRUST GUARDRAIL
+            </div>
             {latestClaim ? (
-              <div className="bg-rose-950/30 border border-rose-500/60 rounded p-2.5 text-xs space-y-2">
+              <div className="border border-rose-500/60 rounded p-2.5 text-xs space-y-2">
                 <div className="flex gap-2.5 items-center">
                   {latestClaim.cropBase64 && latestClaim.cropBase64.startsWith('data:image') && (
                     <img
@@ -799,7 +663,7 @@ export default function App() {
                 {latestClaim.guardrailStatus === 'HELD_WAITING_VOICE_AUTH' ? (
                   <div className="pt-1 flex flex-col gap-1.5">
                     <div className="text-[10px] text-amber-400 font-bold">
-                      ⚠ ZERO-TRUST GUARDRAIL: Financial Impact &gt;$100 USD Held
+                      ⚠ ZERO-TRUST GUARDRAIL: Financial Impact >$100 USD Held
                     </div>
                     <button
                       onClick={authorizeGuardrailClaim}
@@ -822,62 +686,30 @@ export default function App() {
           </div>
 
           <div className="border border-slate-800 bg-[#0D1017] rounded-lg p-3">
-            <div className="text-xs font-semibold text-slate-200 border-b border-slate-800 pb-2 mb-2 flex items-center justify-between">
-              <span className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-cyan-400" /> CROP-TO-STUDIO SYNTHESIS (MUSE IMAGE)
-              </span>
-              {latestCatalog?.mongoId && (
-                <span className="text-[9px] text-cyan-400 font-mono bg-cyan-950/60 px-1.5 py-0.5 rounded border border-cyan-800">
-                  DB_TX: {latestCatalog.mongoId.slice(0, 10)}...
-                </span>
-              )}
+            <div className="text-xs font-semibold text-slate-200 border-b border-slate-800 pb-2 mb-2 flex items-center gap-2">
+              <Sparkles className="w-4 h-4 text-cyan-400" /> CROP-TO-STUDIO SYNTHESIS (MUSE IMAGE)
             </div>
-
             {latestCatalog ? (
-              <div className="bg-cyan-950/20 border border-cyan-500/50 rounded p-2.5 text-xs space-y-2.5">
-                <div className="flex items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <span className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 font-bold">
-                      {latestCatalog.status}
-                    </span>
-                    <div className="font-bold text-white mt-1 truncate">{latestCatalog.title}</div>
+              <div className="space-y-2">
+                <div className="text-[11px] font-semibold text-cyan-300">{latestCatalog.title}</div>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <div className="text-[9px] text-slate-500 mb-1">1. SAM 3.1 CROP</div>
+                    <img
+                      src={latestCatalog.sourceCropUrl}
+                      alt="Crop"
+                      className="w-full aspect-square object-cover rounded border border-slate-700"
+                    />
+                  </div>
+                  <div>
+                    <div className="text-[9px] text-slate-500 mb-1">2. MUSE IMAGE 8K</div>
+                    <img
+                      src={latestCatalog.studioImageUrl}
+                      alt="Studio"
+                      className="w-full aspect-square object-cover rounded border border-cyan-800"
+                    />
                   </div>
                 </div>
-
-                <div className="grid grid-cols-11 items-center gap-2 bg-[#050608] p-2 rounded border border-slate-800">
-                  <div className="col-span-5 flex flex-col items-center">
-                    <div className="relative w-full aspect-square rounded border border-slate-600 overflow-hidden bg-slate-950">
-                      <img
-                        src={latestCatalog.sourceCropUrl}
-                        alt="SAM 3.1 Raw Crop"
-                        className="w-full h-full object-cover"
-                      />
-                      <span className="absolute top-1 left-1 bg-slate-950/90 border border-slate-700 text-[8px] px-1.5 py-0.5 rounded text-slate-300 font-bold">
-                        1. SAM 3.1 CROP
-                      </span>
-                    </div>
-                    <span className="text-[9px] text-slate-400 mt-1">Raw Countertop Pixel Crop</span>
-                  </div>
-
-                  <div className="col-span-1 flex flex-col items-center justify-center text-cyan-400 font-extrabold text-sm">
-                    <span>➔</span>
-                  </div>
-
-                  <div className="col-span-5 flex flex-col items-center">
-                    <div className="relative w-full aspect-square rounded border-2 border-cyan-400 overflow-hidden bg-slate-950 shadow-[0_0_18px_rgba(34,211,238,0.3)]">
-                      <img
-                        src={latestCatalog.studioImageUrl}
-                        alt="Muse Image 8K Studio"
-                        className="w-full h-full object-cover"
-                      />
-                      <span className="absolute top-1 left-1 bg-cyan-950/90 border border-cyan-400/60 text-[8px] px-1.5 py-0.5 rounded text-cyan-200 font-bold">
-                        2. MUSE IMAGE 8K
-                      </span>
-                    </div>
-                    <span className="text-[9px] text-cyan-300 font-semibold mt-1">Studio E-Commerce Asset</span>
-                  </div>
-                </div>
-
                 {latestCatalog.visualDna && (
                   <div className="grid grid-cols-2 gap-1.5 bg-[#090A0F] p-2 rounded border border-cyan-900/50 text-[9px]">
                     <div className="truncate">
