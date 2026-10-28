@@ -712,7 +712,7 @@ export default function App() {
             <div className="text-xs font-semibold text-slate-200 border-b border-slate-800 pb-2 mb-2 flex items-center gap-2">
               <Activity className="w-4 h-4 text-cyan-400" /> MUSE SPARK OPEN REASONING TRACE
             </div>
-            <pre className="text-[10px] text-slate-400 whitespace-pre-wrap leading-relaxed max-h-28 overflow-auto [scrollbar-width:thin]">
+            <pre className="text-[10px] text-slate-400 whitespace-pre-wrap leading-relaxed max-h-28 overflow-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
               {reasoningTrace || 'Waiting for spatial reasoning...'}
             </pre>
           </div>
@@ -821,7 +821,7 @@ export default function App() {
                   </div>
                 </div>
                 {latestCatalog.visualDna && (
-                  <div className="flex flex-nowrap gap-1.5 overflow-hidden bg-[#090A0F] p-1.5 rounded border border-cyan-900/50 text-[9px]">
+                  <div className="grid grid-cols-2 gap-1 text-[9px]">
                     {[
                       ['GEOMETRY', latestCatalog.visualDna.containerGeometry],
                       ['PALETTE', latestCatalog.visualDna.exactColorPalette],
@@ -831,7 +831,7 @@ export default function App() {
                       <span
                         key={name}
                         title={String(value)}
-                        className="px-2 py-0.5 rounded-full border border-cyan-800 bg-cyan-950/50 max-w-full truncate"
+                        className="px-1.5 py-0.5 rounded border border-cyan-800 bg-cyan-950/50 truncate"
                       >
                         <span className="text-cyan-400 font-bold">{name}: </span>
                         <span className="text-slate-200">{value}</span>
