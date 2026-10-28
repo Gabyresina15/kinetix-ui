@@ -108,6 +108,7 @@ export default function App() {
     glimmerMs: 0,
     samMs: 0,
     sparkMs: 0,
+    segmenter: 'Spark Vision',
     tokensSavedPct: 0,
     piiRedacted: 0,
   });
@@ -220,7 +221,7 @@ export default function App() {
     setLatestCatalog(null);
     setVmExecution(null);
     setInventory(INITIAL_INVENTORY);
-    setTelemetry({ glimmerMs: 0, samMs: 0, sparkMs: 0, tokensSavedPct: 0, piiRedacted: 0 });
+    setTelemetry({ glimmerMs: 0, samMs: 0, sparkMs: 0, segmenter: 'Spark Vision', tokensSavedPct: 0, piiRedacted: 0 });
     setSteps(
       INITIAL_STEPS.map((s, idx) => ({
         ...s,
@@ -291,13 +292,17 @@ export default function App() {
             setMasks(incomingObjects);
             setTelemetry((t) => ({
               ...t,
-              samMs: payload.latencyMs || t.samMs,
+              samMs: payload.samUsed ? payload.samLatencyMs : payload.latencyMs || t.samMs,
               sparkMs: payload.sparkLatencyMs || t.sparkMs,
+              segmenter: payload.samUsed ? 'SAM 3.1' : 'Spark Vision',
             }));
             updateStep('sam_lock', {
               status: 'MUTATED',
-              latencyMs: payload.latencyMs,
-              detail: `${incomingObjects.length} actionable objects cropped`,
+              model: payload.samUsed ? 'SAM 3.1' : 'Muse Spark Vision + Sharp',
+              latencyMs: payload.samUsed ? payload.samLatencyMs : payload.latencyMs,
+              detail: payload.samUsed
+                ? `SAM 3.1 tightened ${payload.samRefined} boxes`
+                : `${incomingObjects.length} actionable objects cropped`,
             });
             updateStep('spark_plan', { status: 'RUNNING' });
           }
@@ -450,7 +455,7 @@ export default function App() {
     setVmExecution(null);
     setIsFrozen(false);
     setVoiceText(DEFAULT_PROMPT);
-    setTelemetry({ glimmerMs: 0, samMs: 0, sparkMs: 0, tokensSavedPct: 0, piiRedacted: 0 });
+    setTelemetry({ glimmerMs: 0, samMs: 0, sparkMs: 0, segmenter: 'Spark Vision', tokensSavedPct: 0, piiRedacted: 0 });
     setInventory(INITIAL_INVENTORY);
     setSteps(INITIAL_STEPS);
     if (videoRef.current && cameraActive) {
@@ -552,7 +557,7 @@ export default function App() {
           </div>
           <div className="flex items-center gap-1.5">
             <Scan className="w-4 h-4 text-cyan-400" />
-            <span className="text-slate-400">Spark Vision:</span>
+            <span className="text-slate-400">{telemetry.segmenter}:</span>
             <span className="text-cyan-400 font-bold">{telemetry.samMs || '--'}ms</span>
           </div>
           <div className="flex items-center gap-1.5">
