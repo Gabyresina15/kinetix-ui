@@ -108,7 +108,7 @@ export default function App() {
     glimmerMs: 0,
     samMs: 0,
     sparkMs: 0,
-    segmenter: 'Spark Vision',
+    segmenter: 'Sharp crop',
     tokensSavedPct: 0,
     piiRedacted: 0,
   });
@@ -221,7 +221,7 @@ export default function App() {
     setLatestCatalog(null);
     setVmExecution(null);
     setInventory(INITIAL_INVENTORY);
-    setTelemetry({ glimmerMs: 0, samMs: 0, sparkMs: 0, segmenter: 'Spark Vision', tokensSavedPct: 0, piiRedacted: 0 });
+    setTelemetry({ glimmerMs: 0, samMs: 0, sparkMs: 0, segmenter: 'Sharp crop', tokensSavedPct: 0, piiRedacted: 0 });
     setSteps(
       INITIAL_STEPS.map((s, idx) => ({
         ...s,
@@ -294,7 +294,7 @@ export default function App() {
               ...t,
               samMs: payload.samUsed ? payload.samLatencyMs : payload.latencyMs || t.samMs,
               sparkMs: payload.sparkLatencyMs || t.sparkMs,
-              segmenter: payload.samUsed ? 'SAM 3.1' : 'Spark Vision',
+              segmenter: payload.samUsed ? 'SAM 3.1' : 'Sharp crop',
             }));
             updateStep('sam_lock', {
               status: 'MUTATED',
@@ -394,6 +394,7 @@ export default function App() {
               setLatestCatalog(result);
               updateStep(tool, {
                 status: 'MUTATED',
+                latencyMs: result.synthesisLatencyMs,
                 detail: `Published "${result.title}"`,
               });
             }
@@ -455,7 +456,7 @@ export default function App() {
     setVmExecution(null);
     setIsFrozen(false);
     setVoiceText(DEFAULT_PROMPT);
-    setTelemetry({ glimmerMs: 0, samMs: 0, sparkMs: 0, segmenter: 'Spark Vision', tokensSavedPct: 0, piiRedacted: 0 });
+    setTelemetry({ glimmerMs: 0, samMs: 0, sparkMs: 0, segmenter: 'Sharp crop', tokensSavedPct: 0, piiRedacted: 0 });
     setInventory(INITIAL_INVENTORY);
     setSteps(INITIAL_STEPS);
     if (videoRef.current && cameraActive) {
@@ -601,7 +602,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="flex-1 grid grid-cols-12 gap-4 p-4 overflow-hidden">
+      <main className="flex-1 grid grid-cols-12 gap-2.5 p-2.5 overflow-hidden min-h-0">
         <section className="col-span-5 flex flex-col gap-3 border border-slate-800 bg-[#0D1017] rounded-lg p-3 relative">
           <div className="flex items-center justify-between text-xs border-b border-slate-800/80 pb-2">
             <span className="flex items-center gap-2 font-semibold text-slate-200">
@@ -679,7 +680,7 @@ export default function App() {
           />
         </section>
 
-        <section className="col-span-4 flex flex-col gap-3 overflow-auto">
+        <section className="col-span-4 flex flex-col gap-2 overflow-y-auto min-h-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <div className="border border-slate-800 bg-[#0D1017] rounded-lg p-3">
             <div className="text-xs font-semibold text-slate-200 border-b border-slate-800 pb-2 mb-2 flex items-center gap-2">
               <BrainCircuit className="w-4 h-4 text-amber-400" /> AGENT EXECUTION DAG (SSE)
@@ -711,13 +712,13 @@ export default function App() {
             <div className="text-xs font-semibold text-slate-200 border-b border-slate-800 pb-2 mb-2 flex items-center gap-2">
               <Activity className="w-4 h-4 text-cyan-400" /> MUSE SPARK OPEN REASONING TRACE
             </div>
-            <pre className="text-[10px] text-slate-400 whitespace-pre-wrap leading-relaxed max-h-48 overflow-auto">
+            <pre className="text-[10px] text-slate-400 whitespace-pre-wrap leading-relaxed max-h-28 overflow-auto [scrollbar-width:thin]">
               {reasoningTrace || 'Waiting for spatial reasoning...'}
             </pre>
           </div>
         </section>
 
-        <section className="col-span-3 flex flex-col gap-3 overflow-auto">
+        <section className="col-span-3 flex flex-col gap-2 overflow-y-auto min-h-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <div className="border border-slate-800 bg-[#0D1017] rounded-lg p-3">
             <div className="text-xs font-semibold text-slate-200 border-b border-slate-800 pb-2 mb-2 flex items-center gap-2">
               <Package className="w-4 h-4 text-emerald-400" /> LIVE INVENTORY STATE (AUTO-UPSERT)
@@ -807,7 +808,7 @@ export default function App() {
                     <img
                       src={latestCatalog.sourceCropUrl}
                       alt="Raw camera crop"
-                      className="w-full aspect-square object-cover rounded border border-slate-700"
+                      className="w-full h-28 object-cover rounded border border-slate-700"
                     />
                   </div>
                   <div>
@@ -815,12 +816,12 @@ export default function App() {
                     <img
                       src={latestCatalog.studioImageUrl}
                       alt="Muse Image studio render"
-                      className="w-full aspect-square object-cover rounded border border-cyan-800"
+                      className="w-full h-28 object-cover rounded border border-cyan-800"
                     />
                   </div>
                 </div>
                 {latestCatalog.visualDna && (
-                  <div className="flex flex-wrap gap-1.5 bg-[#090A0F] p-2 rounded border border-cyan-900/50 text-[9px]">
+                  <div className="flex flex-nowrap gap-1.5 overflow-hidden bg-[#090A0F] p-1.5 rounded border border-cyan-900/50 text-[9px]">
                     {[
                       ['GEOMETRY', latestCatalog.visualDna.containerGeometry],
                       ['PALETTE', latestCatalog.visualDna.exactColorPalette],
