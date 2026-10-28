@@ -58,7 +58,7 @@ const MASK_STYLE_MAP: Record<string, string> = {
 const resolveMaskStyle = (status: string | undefined): string =>
   MASK_STYLE_MAP[status ?? 'IDLE_OBSERVED'] || MASK_STYLE_MAP.IDLE_OBSERVED;
 
-const MAX_FRAME_SIDE = 1280;
+const MAX_FRAME_SIDE = 960;
 
 interface ExecutionStep {
   id: string;
@@ -74,11 +74,11 @@ const DEFAULT_PROMPT =
 
 const INITIAL_STEPS: ExecutionStep[] = [
   { id: 'edge_pii', title: 'Edge Cognitive Filter & PII Redaction', model: 'muse-spark-open-1026', status: 'PENDING' },
-  { id: 'sam_lock', title: 'Spatial Instance Segmentation (N-Graph)', model: 'SAM 3.1 Vision', status: 'PENDING' },
-  { id: 'spark_plan', title: 'Multi-Tool DAG Reasoning', model: 'muse-spark-open-1026 (Baseten)', status: 'PENDING' },
+  { id: 'sam_lock', title: '2D Spatial Grounding & Pixel Crop', model: 'Muse Spark Vision + Sharp', status: 'PENDING' },
+  { id: 'spark_plan', title: 'Multi-Tool DAG Planning', model: 'Muse Spark Open (Baseten)', status: 'PENDING' },
   { id: 'quarantine_and_claim', title: 'Tool: Quarantine & Supplier Claim', model: 'Action Engine', status: 'PENDING' },
   { id: 'mutate_inventory', title: 'Tool: Inventory SKU Auto-Upsert', model: 'Action Engine', status: 'PENDING' },
-  { id: 'generate_studio_catalog', title: 'Tool: E-Commerce Studio Synthesis', model: 'Muse Image', status: 'PENDING' },
+  { id: 'generate_studio_catalog', title: 'Tool: Crop-to-Studio Synthesis', model: 'Muse Image', status: 'PENDING' },
   { id: 'recalculate_margins_vm', title: 'Tool: Financial Margin Sandbox', model: 'Muse Code (node:vm)', status: 'PENDING' },
 ];
 
@@ -108,7 +108,7 @@ export default function App() {
     glimmerMs: 0,
     samMs: 0,
     sparkMs: 0,
-    tokensSavedPct: 68,
+    tokensSavedPct: 0,
     piiRedacted: 0,
   });
 
@@ -185,7 +185,7 @@ export default function App() {
         canvas.width = Math.round(srcW * scale);
         canvas.height = Math.round(srcH * scale);
         ctx.drawImage(source, 0, 0, canvas.width, canvas.height);
-        return canvas.toDataURL('image/jpeg', 0.82);
+        return canvas.toDataURL('image/jpeg', 0.72);
       };
 
       if (cameraActive && videoRef.current && videoRef.current.videoWidth > 0) {
@@ -215,13 +215,19 @@ export default function App() {
 
     // FULL CLEAN START — never keep previous run data
     setMasks([]);
-    setReasoningTrace('');
+    setReasoningTrace('Scanning workspace with Muse Spark Open (Baseten)...');
     setLatestClaim(null);
     setLatestCatalog(null);
     setVmExecution(null);
-    setTelemetry({ glimmerMs: 0, samMs: 0, sparkMs: 0, tokensSavedPct: 68, piiRedacted: 0 });
-    setSteps(INITIAL_STEPS.map((s) => ({ ...s, status: 'PENDING', detail: undefined })));
-    updateStep('edge_pii', { status: 'RUNNING' });
+    setInventory(INITIAL_INVENTORY);
+    setTelemetry({ glimmerMs: 0, samMs: 0, sparkMs: 0, tokensSavedPct: 0, piiRedacted: 0 });
+    setSteps(
+      INITIAL_STEPS.map((s, idx) => ({
+        ...s,
+        status: idx === 0 ? 'RUNNING' : 'PENDING',
+        detail: idx === 0 ? 'Scanning the frame and planning the DAG...' : undefined,
+      }))
+    );
 
     try {
       const response = await fetch('http://localhost:4000/api/orchestrate-stream', {
@@ -259,30 +265,39 @@ export default function App() {
             continue;
           }
 
+          if (eventName === 'VISION_SCAN_STARTED') {
+            updateStep('edge_pii', {
+              status: 'RUNNING',
+              detail: 'Muse Spark Open is reading the frame',
+            });
+          }
+
           if (eventName === 'EDGE_PII_SHIELD') {
             const redactedLen = Array.isArray(payload.redactedMasks) ? payload.redactedMasks.length : 0;
             setTelemetry((t) => ({
               ...t,
-              glimmerMs: payload.latencyMs || 38,
-              tokensSavedPct: payload.cloudTokensSavedPct || 68,
+              glimmerMs: payload.latencyMs || t.glimmerMs,
               piiRedacted: redactedLen,
             }));
             updateStep('edge_pii', {
               status: 'MUTATED',
-              latencyMs: payload.latencyMs || 38,
-              detail: `Zero-Trust Edge Filter Active (${redactedLen} PII shields)`,
+              latencyMs: payload.latencyMs,
+              detail: `PII shields: ${redactedLen}`,
             });
-            updateStep('sam_lock', { status: 'RUNNING' });
           }
 
           if (eventName === 'SPATIAL_LOCK') {
             const incomingObjects = Array.isArray(payload.objects) ? payload.objects : [];
             setMasks(incomingObjects);
-            setTelemetry((t) => ({ ...t, samMs: payload.latencyMs || 285 }));
+            setTelemetry((t) => ({
+              ...t,
+              samMs: payload.latencyMs || t.samMs,
+              sparkMs: payload.sparkLatencyMs || t.sparkMs,
+            }));
             updateStep('sam_lock', {
               status: 'MUTATED',
-              latencyMs: payload.latencyMs || 285,
-              detail: `${incomingObjects.length} spatial nodes indexed in 2D scene graph`,
+              latencyMs: payload.latencyMs,
+              detail: `${incomingObjects.length} actionable objects cropped`,
             });
             updateStep('spark_plan', { status: 'RUNNING' });
           }
@@ -327,9 +342,12 @@ export default function App() {
 
             if (tool === 'quarantine_and_claim' && result) {
               setLatestClaim(result);
+              const held = result.guardrailStatus === 'HELD_WAITING_VOICE_AUTH';
               updateStep(tool, {
                 status: 'MUTATED',
-                detail: `Claim #${result.id} held by Zero-Trust ($${result.amountUsd} USD)`,
+                detail: held
+                  ? `Claim #${result.id} (-$${Number(result.amountUsd).toFixed(2)}) exceeds $${result.thresholdUsd || 50}`
+                  : `Claim #${result.id} auto-approved under $${result.thresholdUsd || 50}`,
               });
             }
 
@@ -353,10 +371,18 @@ export default function App() {
                   ...prev,
                 ];
               });
-              updateStep(tool, {
-                status: 'MUTATED',
-                detail: `${result.sku} -> ${result.stock} units in MongoDB`,
-              });
+              const mutationLine = `${result.sku}: ${result.previousStock ?? '?'}→${result.stock} (+${result.delta ?? 1})`;
+              setSteps((prev) =>
+                prev.map((s) =>
+                  s.id === 'mutate_inventory'
+                    ? {
+                        ...s,
+                        status: 'MUTATED',
+                        detail: s.detail && s.status === 'MUTATED' ? `${s.detail} | ${mutationLine}` : mutationLine,
+                      }
+                    : s
+                )
+              );
             }
 
             if (tool === 'generate_studio_catalog' && result) {
@@ -369,14 +395,15 @@ export default function App() {
 
             if (tool === 'recalculate_margins_vm' && result) {
               setVmExecution(result);
+              const targetSku = result.updatedSku || 'SKU-DDR5-32GB-KIT';
               setInventory((prev) =>
-                prev.map((item, idx) =>
-                  idx === 0 ? { ...item, sellPriceUsd: result.finalPrice || item.sellPriceUsd } : item
+                prev.map((item) =>
+                  item.sku === targetSku ? { ...item, sellPriceUsd: result.finalPrice } : item
                 )
               );
               updateStep(tool, {
                 status: 'MUTATED',
-                detail: `New margin price in VM: $${result.finalPrice} USD`,
+                detail: `${targetSku} repriced to $${result.finalPrice} USD`,
               });
             }
           }
@@ -423,7 +450,7 @@ export default function App() {
     setVmExecution(null);
     setIsFrozen(false);
     setVoiceText(DEFAULT_PROMPT);
-    setTelemetry({ glimmerMs: 0, samMs: 0, sparkMs: 0, tokensSavedPct: 68, piiRedacted: 0 });
+    setTelemetry({ glimmerMs: 0, samMs: 0, sparkMs: 0, tokensSavedPct: 0, piiRedacted: 0 });
     setInventory(INITIAL_INVENTORY);
     setSteps(INITIAL_STEPS);
     if (videoRef.current && cameraActive) {
@@ -481,8 +508,6 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [triggerOrchestration, authorizeGuardrailClaim, resetDemoState, isRunning]);
 
-  const savedPct = telemetry.tokensSavedPct || 68;
-
   const renderMask = (m: SpatialMask) => {
     const [x, y, w, h] = m.bbox;
     return (
@@ -522,25 +547,18 @@ export default function App() {
         <div className="flex items-center gap-4 text-xs">
           <div className="flex items-center gap-1.5">
             <ShieldAlert className="w-4 h-4 text-emerald-400" />
-            <span className="text-slate-400">Edge Shield:</span>
+            <span className="text-slate-400">PII check:</span>
             <span className="text-emerald-400 font-bold">{telemetry.glimmerMs || '--'}ms</span>
           </div>
           <div className="flex items-center gap-1.5">
             <Scan className="w-4 h-4 text-cyan-400" />
-            <span className="text-slate-400">SAM 3.1:</span>
+            <span className="text-slate-400">Spark Vision:</span>
             <span className="text-cyan-400 font-bold">{telemetry.samMs || '--'}ms</span>
           </div>
           <div className="flex items-center gap-1.5">
             <Cpu className="w-4 h-4 text-amber-400" />
             <span className="text-slate-400">Spark Open (Baseten):</span>
             <span className="text-amber-400 font-bold">{telemetry.sparkMs || '--'}ms</span>
-          </div>
-
-          <div className="px-3 py-1 rounded bg-emerald-950/80 border border-emerald-500/60 text-emerald-300 flex items-center gap-2">
-            <Activity className="w-3.5 h-3.5 text-emerald-400 animate-pulse" />
-            <span>
-              Cloud Offload: <strong className="text-white">{savedPct}%</strong>
-            </span>
           </div>
 
           <button
@@ -582,10 +600,10 @@ export default function App() {
         <section className="col-span-5 flex flex-col gap-3 border border-slate-800 bg-[#0D1017] rounded-lg p-3 relative">
           <div className="flex items-center justify-between text-xs border-b border-slate-800/80 pb-2">
             <span className="flex items-center gap-2 font-semibold text-slate-200">
-              <Camera className="w-4 h-4 text-cyan-400" /> WORKSPACE SPATIAL FEED (SAM 3.1 N-GRAPH)
+              <Camera className="w-4 h-4 text-cyan-400" /> WORKSPACE SPATIAL FEED
             </span>
             <span className="text-[10px] px-2 py-0.5 rounded bg-amber-950/80 text-amber-300 border border-amber-500/50 font-bold">
-              {isFrozen ? 'FRAME LOCKED (SEGMENTING)' : 'LIVE FEED'}
+              {isRunning ? 'SCANNING SCENE' : isFrozen ? 'FRAME LOCKED' : 'LIVE FEED'}
             </span>
           </div>
 
@@ -745,7 +763,8 @@ export default function App() {
                 {latestClaim.guardrailStatus === 'HELD_WAITING_VOICE_AUTH' ? (
                   <div className="pt-1 flex flex-col gap-1.5">
                     <div className="text-[10px] text-amber-400 font-bold">
-                      ⚠ ZERO-TRUST GUARDRAIL: Financial Action Held (-${Number(latestClaim.amountUsd).toFixed(2)} USD)
+                      ⚠ ZERO-TRUST GUARDRAIL: Claim (-${Number(latestClaim.amountUsd).toFixed(2)} USD) exceeds $
+                      {Number(latestClaim.thresholdUsd || 50).toFixed(0)} auto-limit — Held
                     </div>
                     <button
                       onClick={authorizeGuardrailClaim}
@@ -775,14 +794,14 @@ export default function App() {
               <div className="space-y-2">
                 <div className="text-[11px] font-semibold text-cyan-300">{latestCatalog.title}</div>
                 <div className="text-[9px] text-slate-500 font-bold tracking-wider">
-                  BEFORE / AFTER: RAW SAM CROP &rarr; MUSE IMAGE 8K
+                  BEFORE / AFTER: RAW CAMERA CROP &rarr; MUSE IMAGE
                 </div>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <div className="text-[9px] text-slate-500 mb-1">BEFORE // RAW SAM CROP</div>
+                    <div className="text-[9px] text-slate-500 mb-1">BEFORE // RAW CAMERA CROP</div>
                     <img
                       src={latestCatalog.sourceCropUrl}
-                      alt="Raw SAM crop"
+                      alt="Raw camera crop"
                       className="w-full aspect-square object-cover rounded border border-slate-700"
                     />
                   </div>
