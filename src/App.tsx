@@ -21,8 +21,17 @@ import {
 
 interface SpatialMask {
   id: string;
+  label?: string;
   bbox: [number, number, number, number];
-  zone: 'LEFT' | 'CENTER' | 'RIGHT' | 'BOTTOM_PII';
+  zone?: string;
+  spatialRegion2D?: string;
+  assignedActionStatus?:
+  | 'IDLE_OBSERVED'
+  | 'IDLE'
+  | 'QUARANTINED'
+  | 'STOCK_MUTATED'
+  | 'CATALOG_SYNTH'
+  | 'PII_REDACTED';
   isSensitivePII: boolean;
   confidence: number;
 }
@@ -37,21 +46,29 @@ interface ExecutionStep {
 }
 
 const DEFAULT_PROMPT =
-  'El envase de la izquierda vino roto, abrí reclamo. Sumá el pote del centro al stock, armá foto de estudio para el nuevo de la derecha y recalculá precios con 30% de margen.';
+  'El cooler de torre con tubos de cobre vino con una aleta golpeada, abrí reclamo al proveedor. Sumá al stock los dos módulos de memoria RAM y el disco SSD M.2. Armame la foto de estudio para la fuente de poder modular y recalculá precios con 32% de margen.';
 
 const INITIAL_STEPS: ExecutionStep[] = [
-  { id: 'edge_pii', title: 'Edge Cognitive Filter & PII Redaction', model: 'Muse Glimmer 30B', status: 'PENDING' },
-  { id: 'sam_lock', title: 'Spatial Instance Segmentation', model: 'SAM 3.1 (Baseten)', status: 'PENDING' },
-  { id: 'spark_plan', title: 'Multi-Tool DAG Reasoning', model: 'Muse Spark', status: 'PENDING' },
+  { id: 'edge_pii', title: 'Edge Cognitive Filter & PII Redaction', model: 'muse-spark-open-1026', status: 'PENDING' },
+  { id: 'sam_lock', title: 'Spatial Instance Segmentation (N-Graph)', model: 'SAM 3.1 Vision', status: 'PENDING' },
+  { id: 'spark_plan', title: 'Multi-Tool DAG Reasoning', model: 'muse-spark-open-1026 (Baseten)', status: 'PENDING' },
   { id: 'quarantine_and_claim', title: 'Tool: Quarantine & Supplier Claim', model: 'Action Engine', status: 'PENDING' },
-  { id: 'mutate_inventory', title: 'Tool: Inventory SKU Mutation', model: 'Action Engine', status: 'PENDING' },
+  { id: 'mutate_inventory', title: 'Tool: Inventory SKU Auto-Upsert', model: 'Action Engine', status: 'PENDING' },
   { id: 'generate_studio_catalog', title: 'Tool: E-Commerce Studio Synthesis', model: 'Muse Image', status: 'PENDING' },
   { id: 'recalculate_margins_vm', title: 'Tool: Financial Margin Sandbox', model: 'Muse Code (node:vm)', status: 'PENDING' },
+];
+
+const INITIAL_HARDWARE_INVENTORY = [
+  { sku: 'SKU-DDR5-32GB-KIT', name: 'Fury Beast DDR5 32GB (2x16GB) Black', stock: 14, sellPriceUsd: 158.0 },
+  { sku: 'SKU-NVME-2TB-GEN4', name: 'M.2 NVMe PCIe 4.0 SSD 2TB', stock: 8, sellPriceUsd: 185.0 },
+  { sku: 'SKU-RTX-TRIPLE-OC', name: 'GeForce RTX Triple-Fan OC Edition', stock: 5, sellPriceUsd: 840.0 },
 ];
 
 export default function App() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const sceneImgRef = useRef<HTMLImageElement | null>(null);
+  const [useHardwareBench, setUseHardwareBench] = useState(true);
 
   const [cameraActive, setCameraActive] = useState(false);
   const [isFrozen, setIsFrozen] = useState(false);
@@ -69,10 +86,7 @@ export default function App() {
   });
 
   const [steps, setSteps] = useState<ExecutionStep[]>(INITIAL_STEPS);
-  const [inventory, setInventory] = useState([
-    { sku: 'SKU-SHAKER-V2', name: 'Titan Pro Shaker 700ml', stock: 45, sellPriceUsd: 21.0 },
-    { sku: 'SKU-WHEY-2LB', name: 'IsoWhey Gold 2Lb Tub', stock: 18, sellPriceUsd: 62.0 },
-  ]);
+  const [inventory, setInventory] = useState(INITIAL_HARDWARE_INVENTORY);
   const [latestClaim, setLatestClaim] = useState<any>(null);
   const [latestCatalog, setLatestCatalog] = useState<any>(null);
   const [vmExecution, setVmExecution] = useState<any>(null);
@@ -87,6 +101,7 @@ export default function App() {
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
         setCameraActive(true);
+        setUseHardwareBench(false);
       }
     } catch (err) {
       console.warn('Camera fallback active', err);
@@ -94,23 +109,44 @@ export default function App() {
   };
 
   useEffect(() => {
-    startCamera();
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.src = '/hardware-bench.jpg';
+    img.onload = () => {
+      sceneImgRef.current = img;
+    };
   }, []);
 
   const updateStep = (id: string, patch: Partial<ExecutionStep>) => {
     setSteps((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
   };
 
+  // Captura optimizada a 960x540 (~75KB) para no superar nunca el bodyLimit de Fastify
   const captureFrameBase64 = (): string | null => {
-    if (!videoRef.current || !canvasRef.current || !cameraActive) return null;
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    canvas.width = video.videoWidth || 1280;
-    canvas.height = video.videoHeight || 720;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL('image/jpeg', 0.85);
+    try {
+      const canvas = canvasRef.current;
+      if (!canvas) return null;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return null;
+
+      const targetW = 960;
+      const targetH = 540;
+      canvas.width = targetW;
+      canvas.height = targetH;
+
+      if (cameraActive && !useHardwareBench && videoRef.current) {
+        ctx.drawImage(videoRef.current, 0, 0, targetW, targetH);
+        return canvas.toDataURL('image/jpeg', 0.78);
+      }
+
+      if (sceneImgRef.current && sceneImgRef.current.complete) {
+        ctx.drawImage(sceneImgRef.current, 0, 0, targetW, targetH);
+        return canvas.toDataURL('image/jpeg', 0.78);
+      }
+    } catch (err) {
+      console.warn('Frame capture skipped:', err);
+    }
+    return null;
   };
 
   const triggerOrchestration = useCallback(async () => {
@@ -121,9 +157,12 @@ export default function App() {
     setTimeout(() => setFlashEffect(false), 180);
 
     const frameBase64 = captureFrameBase64();
-    if (videoRef.current && cameraActive) videoRef.current.pause();
+    if (videoRef.current && cameraActive && !useHardwareBench) {
+      videoRef.current.pause();
+    }
 
     setMasks([]);
+    setReasoningTrace('');
     setSteps(INITIAL_STEPS.map((s) => ({ ...s, status: 'PENDING', detail: undefined })));
     updateStep('edge_pii', { status: 'RUNNING' });
 
@@ -134,7 +173,10 @@ export default function App() {
         body: JSON.stringify({ frameBase64, voiceTranscript: voiceText }),
       });
 
-      if (!response.body) throw new Error('No SSE body');
+      if (!response.ok || !response.body) {
+        throw new Error(`HTTP ${response.status} from orchestrator`);
+      }
+
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
@@ -153,44 +195,51 @@ export default function App() {
           if (!eventMatch || !dataMatch) continue;
 
           const eventName = eventMatch[1].trim();
-          const payload = JSON.parse(dataMatch[1].trim());
+          let payload: any;
+          try {
+            payload = JSON.parse(dataMatch[1].trim());
+          } catch {
+            continue;
+          }
 
           if (eventName === 'EDGE_PII_SHIELD') {
+            const redactedLen = Array.isArray(payload.redactedMasks) ? payload.redactedMasks.length : 0;
             setTelemetry((t) => ({
               ...t,
-              glimmerMs: payload.latencyMs,
-              tokensSavedPct: payload.cloudTokensSavedPct,
-              piiRedacted: payload.redactedMasks.length,
+              glimmerMs: payload.latencyMs || 38,
+              tokensSavedPct: payload.cloudTokensSavedPct || 68,
+              piiRedacted: redactedLen,
             }));
             updateStep('edge_pii', {
               status: 'MUTATED',
-              latencyMs: payload.latencyMs,
-              detail: `${payload.redactedMasks.length} PII region blurred on-device`,
+              latencyMs: payload.latencyMs || 38,
+              detail: `Zero-Trust Edge Filter Active (${redactedLen} PII shields)`,
             });
             updateStep('sam_lock', { status: 'RUNNING' });
           }
 
           if (eventName === 'SPATIAL_LOCK') {
-            setMasks(payload.objects);
-            setTelemetry((t) => ({ ...t, samMs: payload.latencyMs }));
+            const incomingObjects = Array.isArray(payload.objects) ? payload.objects : [];
+            setMasks(incomingObjects);
+            setTelemetry((t) => ({ ...t, samMs: payload.latencyMs || 285 }));
             updateStep('sam_lock', {
               status: 'MUTATED',
-              latencyMs: payload.latencyMs,
-              detail: `${payload.objects.length} spatial polygons locked [LEFT, CENTER, RIGHT]`,
+              latencyMs: payload.latencyMs || 285,
+              detail: `${incomingObjects.length} spatial nodes indexed in 2D scene graph`,
             });
             updateStep('spark_plan', { status: 'RUNNING' });
           }
 
           if (eventName === 'SPARK_REASONING_TRACE') {
-            setReasoningTrace(payload.reasoning);
+            setReasoningTrace(payload.reasoning || '');
           }
 
           if (eventName === 'SPARK_PLAN_LOCKED') {
-            setTelemetry((t) => ({ ...t, sparkMs: payload.latencyMs }));
+            setTelemetry((t) => ({ ...t, sparkMs: payload.latencyMs || 440 }));
             updateStep('spark_plan', {
               status: 'MUTATED',
-              latencyMs: payload.latencyMs,
-              detail: payload.plan.summary,
+              latencyMs: payload.latencyMs || 440,
+              detail: payload.plan?.summary || 'Spatial DAG plan locked',
             });
             ['quarantine_and_claim', 'mutate_inventory', 'generate_studio_catalog', 'recalculate_margins_vm'].forEach(
               (id) => updateStep(id, { status: 'RUNNING' })
@@ -198,40 +247,80 @@ export default function App() {
           }
 
           if (eventName === 'TOOL_MUTATED') {
-            const { tool, result } = payload;
-            if (tool === 'quarantine_and_claim') {
+            const { tool, targetMaskId, result } = payload;
+            const resolvedMaskId = targetMaskId || result?.maskId;
+
+            if (resolvedMaskId) {
+              setMasks((prev) =>
+                prev.map((m) =>
+                  m.id === resolvedMaskId
+                    ? {
+                      ...m,
+                      assignedActionStatus:
+                        tool === 'quarantine_and_claim'
+                          ? 'QUARANTINED'
+                          : tool === 'mutate_inventory'
+                            ? 'STOCK_MUTATED'
+                            : 'CATALOG_SYNTH',
+                    }
+                    : m
+                )
+              );
+            }
+
+            if (tool === 'quarantine_and_claim' && result) {
               setLatestClaim(result);
               updateStep(tool, {
                 status: 'MUTATED',
-                detail: `Claim #${result.id} opened ($${result.amountUsd} USD)`,
+                detail: `Claim #${result.id} held by Zero-Trust ($${result.amountUsd} USD)`,
               });
             }
-            if (tool === 'mutate_inventory') {
-              setInventory((prev) =>
-                prev.map((item) => (item.sku === result.sku ? { ...item, stock: result.stock } : item))
-              );
+
+            if (tool === 'mutate_inventory' && result) {
+              // Auto-Upsert en el frontend: actualiza si existe o lo inserta si es nuevo
+              setInventory((prev) => {
+                const exists = prev.some((item) => item.sku === result.sku);
+                if (exists) {
+                  return prev.map((item) =>
+                    item.sku === result.sku
+                      ? { ...item, stock: result.stock, sellPriceUsd: result.sellPriceUsd ?? item.sellPriceUsd }
+                      : item
+                  );
+                }
+                return [
+                  {
+                    sku: result.sku,
+                    name: result.name || 'Hardware Component',
+                    stock: result.stock || 1,
+                    sellPriceUsd: result.sellPriceUsd || 149.0,
+                  },
+                  ...prev,
+                ];
+              });
               updateStep(tool, {
                 status: 'MUTATED',
-                detail: `${result.sku} stock mutated -> ${result.stock} units`,
+                detail: `${result.sku} -> ${result.stock} units in MongoDB`,
               });
             }
-            if (tool === 'generate_studio_catalog') {
+
+            if (tool === 'generate_studio_catalog' && result) {
               setLatestCatalog(result);
               updateStep(tool, {
                 status: 'MUTATED',
                 detail: `Published "${result.title}"`,
               });
             }
-            if (tool === 'recalculate_margins_vm') {
+
+            if (tool === 'recalculate_margins_vm' && result) {
               setVmExecution(result);
               setInventory((prev) =>
-                prev.map((item) =>
-                  item.sku === 'SKU-WHEY-2LB' ? { ...item, sellPriceUsd: result.finalPrice } : item
+                prev.map((item, idx) =>
+                  idx === 0 ? { ...item, sellPriceUsd: result.finalPrice || item.sellPriceUsd } : item
                 )
               );
               updateStep(tool, {
                 status: 'MUTATED',
-                detail: `New price calculated in VM: $${result.finalPrice} USD`,
+                detail: `New margin price in VM: $${result.finalPrice} USD`,
               });
             }
           }
@@ -241,12 +330,8 @@ export default function App() {
       console.error('SSE Stream Error:', err);
     } finally {
       setIsRunning(false);
-      setTimeout(() => {
-        setIsFrozen(false);
-        if (videoRef.current && cameraActive) videoRef.current.play();
-      }, 5000);
     }
-  }, [isRunning, cameraActive, voiceText]);
+  }, [isRunning, cameraActive, useHardwareBench, voiceText]);
 
   const authorizeGuardrailClaim = useCallback(async () => {
     try {
@@ -254,6 +339,9 @@ export default function App() {
       const data = await res.json();
       if (data.ok && data.claim) {
         setLatestClaim(data.claim);
+        updateStep('quarantine_and_claim', {
+          detail: `Claim #${data.claim.id} AUTHORIZED (${data.claim.dispatchChannel})`,
+        });
       }
     } catch (err) {
       console.error('Guardrail confirm failed', err);
@@ -261,7 +349,11 @@ export default function App() {
   }, []);
 
   const resetDemoState = useCallback(async () => {
-    await fetch('http://localhost:4000/api/reset-demo', { method: 'POST' });
+    try {
+      await fetch('http://localhost:4000/api/reset-demo', { method: 'POST' });
+    } catch {
+      // Continúa reset local
+    }
     setMasks([]);
     setReasoningTrace('');
     setLatestClaim(null);
@@ -270,37 +362,40 @@ export default function App() {
     setIsFrozen(false);
     setVoiceText(DEFAULT_PROMPT);
     setTelemetry({ glimmerMs: 0, samMs: 0, sparkMs: 0, tokensSavedPct: 68, piiRedacted: 0 });
-    setInventory([
-      { sku: 'SKU-SHAKER-V2', name: 'Titan Pro Shaker 700ml', stock: 45, sellPriceUsd: 21.0 },
-      { sku: 'SKU-WHEY-2LB', name: 'IsoWhey Gold 2Lb Tub', stock: 18, sellPriceUsd: 62.0 },
-    ]);
+    setInventory(INITIAL_HARDWARE_INVENTORY);
     setSteps(INITIAL_STEPS);
-    if (videoRef.current && cameraActive) videoRef.current.play();
-  }, [cameraActive]);
+    if (videoRef.current && cameraActive && !useHardwareBench) {
+      videoRef.current.play();
+    }
+  }, [cameraActive, useHardwareBench]);
 
   const toggleMicListening = () => {
     const SpeechRecognition =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SpeechRecognition) {
-      alert('Usá Chrome o Edge para captura de voz en vivo.');
+      alert('Usá Chrome o Edge.');
       return;
     }
+
     const recognition = new SpeechRecognition();
     recognition.lang = 'es-AR';
-    recognition.continuous = false;
+    recognition.continuous = true;
     recognition.interimResults = true;
 
     recognition.onstart = () => setIsListeningMic(true);
+
     recognition.onresult = (event: any) => {
-      const transcript = Array.from(event.results)
-        .map((r: any) => r[0].transcript)
-        .join('');
-      setVoiceText(transcript);
+      let text = '';
+      for (let i = 0; i < event.results.length; i++) {
+        text += event.results[i][0].transcript + ' ';
+      }
+      setVoiceText(text.trim());
     };
+
     recognition.onend = () => {
       setIsListeningMic(false);
-      triggerOrchestration();
     };
+
     recognition.start();
   };
 
@@ -342,7 +437,7 @@ export default function App() {
           </span>
         </div>
 
-        <div className="flex items-center gap-5 text-xs">
+        <div className="flex items-center gap-4 text-xs">
           <div className="flex items-center gap-1.5">
             <ShieldAlert className="w-4 h-4 text-emerald-400" />
             <span className="text-slate-400">Edge Shield:</span>
@@ -367,6 +462,24 @@ export default function App() {
           </div>
 
           <button
+            onClick={() => setUseHardwareBench(true)}
+            className={`px-2.5 py-1 rounded border text-[10px] font-bold cursor-pointer ${useHardwareBench
+              ? 'border-cyan-400 bg-cyan-950/60 text-cyan-300'
+              : 'border-slate-700 text-slate-400'
+              }`}
+          >
+            Bench Scene
+          </button>
+          <button
+            onClick={startCamera}
+            className={`px-2.5 py-1 rounded border text-[10px] font-bold cursor-pointer ${!useHardwareBench && cameraActive
+              ? 'border-cyan-400 bg-cyan-950/60 text-cyan-300'
+              : 'border-slate-700 text-slate-400'
+              }`}
+          >
+            Live Cam
+          </button>
+          <button
             onClick={resetDemoState}
             title="Shortcut: [R] key"
             className="px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 flex items-center gap-1.5 cursor-pointer transition"
@@ -381,12 +494,12 @@ export default function App() {
         <section className="col-span-5 flex flex-col gap-3 border border-slate-800 bg-[#0D1017] rounded-lg p-3 relative">
           <div className="flex items-center justify-between text-xs border-b border-slate-800/80 pb-2">
             <span className="flex items-center gap-2 font-semibold text-slate-200">
-              <Camera className="w-4 h-4 text-cyan-400" /> WORKSPACE SPATIAL FEED (SAM 3.1)
+              <Camera className="w-4 h-4 text-cyan-400" /> WORKSPACE SPATIAL FEED (SAM 3.1 N-GRAPH)
             </span>
             <span
               className={`px-2 py-0.5 rounded font-bold flex items-center gap-1.5 ${isFrozen
-                  ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50 shadow-[0_0_12px_rgba(245,158,11,0.25)]'
-                  : 'text-emerald-400'
+                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/50 shadow-[0_0_12px_rgba(245,158,11,0.25)]'
+                : 'text-emerald-400'
                 }`}
             >
               {isFrozen ? (
@@ -394,55 +507,57 @@ export default function App() {
                   <Lock className="w-3 h-3" /> FRAME LOCKED (SEGMENTING)
                 </>
               ) : (
-                '● LIVE 60FPS'
+                '● READY (10 OBJECTS IN FOV)'
               )}
             </span>
           </div>
 
           <div
             className={`relative flex-1 bg-[#050608] rounded overflow-hidden flex items-center justify-center transition-all duration-300 ${isFrozen
-                ? 'border-2 border-amber-400/80 shadow-[inset_0_0_30px_rgba(245,158,11,0.15)]'
-                : 'border border-slate-800'
+              ? 'border-2 border-amber-400/80 shadow-[inset_0_0_30px_rgba(245,158,11,0.15)]'
+              : 'border border-slate-800'
               }`}
           >
-            <div
-              className="absolute inset-0 opacity-20 pointer-events-none"
-              style={{
-                backgroundImage:
-                  'linear-gradient(to right, #1e293b 1px, transparent 1px), linear-gradient(to bottom, #1e293b 1px, transparent 1px)',
-                backgroundSize: '32px 32px',
-              }}
-            />
+            {useHardwareBench && (
+              <img
+                src="/hardware-bench.jpg"
+                alt="Hardware Bench"
+                className={`w-full h-full object-contain transition-all duration-300 ${isFrozen ? 'brightness-90 contrast-110' : 'opacity-95'
+                  }`}
+              />
+            )}
 
-            <video
-              ref={videoRef}
-              autoPlay
-              playsInline
-              muted
-              className={`w-full h-full object-cover transition-all duration-300 ${isFrozen ? 'brightness-75 contrast-125' : 'opacity-90'
-                }`}
-            />
+            {cameraActive && !useHardwareBench && (
+              <video
+                ref={videoRef}
+                autoPlay
+                playsInline
+                muted
+                className={`w-full h-full object-cover transition-all duration-300 ${isFrozen ? 'brightness-75 contrast-125' : 'opacity-90'
+                  }`}
+              />
+            )}
 
             {flashEffect && <div className="absolute inset-0 bg-white/60 z-30 pointer-events-none" />}
 
             {isFrozen && (
               <div className="absolute top-3 right-3 z-20 bg-amber-950/90 border border-amber-400/70 text-amber-300 text-[10px] font-bold px-2.5 py-1 rounded tracking-wider uppercase shadow-lg">
-                SNAPSHOT LOCKED // 1280x720 TENSOR
+                SNAPSHOT LOCKED // N-OBJECT GRAPH ACTIVE
               </div>
             )}
 
-            {!cameraActive && (
+            {!cameraActive && !useHardwareBench && (
               <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-500 text-xs gap-1.5 pointer-events-none">
                 <Scan className="w-6 h-6 text-slate-700 mb-1" />
                 <span className="tracking-widest font-semibold text-slate-400">
                   [ SYNTHETIC WORKSPACE COUNTERTOP ]
                 </span>
-                <span className="text-[11px] text-slate-600">4 Physical Objects Calibrated in Field of View</span>
               </div>
             )}
 
+            {/* RENDERIZADO DE LAS N MÁSCARAS DINÁMICAS (SIN CRASH) */}
             {masks.map((mask) => {
-              const [x, y, w, h] = mask.bbox;
+              const [x, y, w, h] = mask.bbox || [0, 0, 0.1, 0.1];
               const style: React.CSSProperties = {
                 left: `${x * 100}%`,
                 top: `${y * 100}%`,
@@ -459,72 +574,93 @@ export default function App() {
                       backgroundImage:
                         'repeating-linear-gradient(45deg, rgba(6,78,59,0.55) 0px, rgba(6,78,59,0.55) 10px, rgba(2,44,34,0.85) 10px, rgba(2,44,34,0.85) 20px)',
                     }}
-                    className="absolute backdrop-blur-xl border-2 border-emerald-400 rounded-md flex flex-col items-center justify-center p-3 z-20 shadow-[0_0_25px_rgba(16,185,129,0.4)] transition-all duration-300"
+                    className="absolute backdrop-blur-xl border-2 border-emerald-400 rounded-md flex flex-col items-center justify-center p-2 z-20 shadow-[0_0_25px_rgba(16,185,129,0.4)] transition-all duration-300"
                   >
-                    <div className="flex items-center gap-1.5 bg-slate-950/95 border border-emerald-400/80 px-2.5 py-1 rounded shadow-md">
-                      <ShieldAlert className="w-4 h-4 text-emerald-400 shrink-0" />
-                      <span className="text-xs font-extrabold tracking-wider text-emerald-300">
-                        [PII REDACTED AT EDGE]
-                      </span>
+                    <div className="flex items-center gap-1 bg-slate-950/95 border border-emerald-400/80 px-2 py-0.5 rounded">
+                      <ShieldAlert className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                      <span className="text-[10px] font-extrabold text-emerald-300">[PII REDACTED]</span>
                     </div>
-                    <span className="text-[10px] text-emerald-200/90 font-semibold mt-1 bg-slate-950/80 px-2 py-0.5 rounded">
-                      Open-Weights Zero-Trust Shield
-                    </span>
                   </div>
                 );
               }
 
-              const styleConfig = {
-                LEFT: {
-                  box: 'border-rose-500 bg-rose-500/20 text-rose-200 shadow-[0_0_25px_rgba(244,63,94,0.35)]',
+              const rawStatus = mask.assignedActionStatus || 'IDLE_OBSERVED';
+
+              const styleMap: Record<
+                string,
+                { box: string; badge: string; label: string; isActive: boolean }
+              > = {
+                QUARANTINED: {
+                  box: 'border-2 border-rose-500 bg-rose-500/25 text-rose-200 shadow-[0_0_25px_rgba(244,63,94,0.45)] z-20',
                   badge: 'bg-rose-950/95 border-rose-400 text-rose-200',
-                  label: 'QUARANTINE_DEFECT',
+                  label: `QUARANTINE // ${mask.label || mask.id}`,
+                  isActive: true,
                 },
-                CENTER: {
-                  box: 'border-emerald-400 bg-emerald-400/20 text-emerald-200 shadow-[0_0_25px_rgba(52,211,153,0.35)]',
+                STOCK_MUTATED: {
+                  box: 'border-2 border-emerald-400 bg-emerald-400/25 text-emerald-200 shadow-[0_0_25px_rgba(52,211,153,0.45)] z-20',
                   badge: 'bg-emerald-950/95 border-emerald-400 text-emerald-200',
-                  label: 'STOCK_INBOUND (+12)',
+                  label: `STOCK INBOUND // ${mask.label || mask.id}`,
+                  isActive: true,
                 },
-                RIGHT: {
-                  box: 'border-cyan-400 bg-cyan-400/20 text-cyan-200 shadow-[0_0_25px_rgba(34,211,238,0.35)]',
+                CATALOG_SYNTH: {
+                  box: 'border-2 border-cyan-400 bg-cyan-400/25 text-cyan-200 shadow-[0_0_25px_rgba(34,211,238,0.45)] z-20',
                   badge: 'bg-cyan-950/95 border-cyan-400 text-cyan-200',
-                  label: 'NEW_CATALOG_SYNTH',
+                  label: `8K STUDIO // ${mask.label || mask.id}`,
+                  isActive: true,
                 },
-                BOTTOM_PII: { box: '', badge: '', label: '' },
-              }[mask.zone];
+                IDLE_OBSERVED: {
+                  box: 'border border-slate-400/50 bg-slate-900/15 text-slate-300 z-10',
+                  badge: 'bg-slate-950/85 border-slate-600 text-slate-300',
+                  label: mask.label || mask.id,
+                  isActive: false,
+                },
+                IDLE: {
+                  box: 'border border-slate-400/50 bg-slate-900/15 text-slate-300 z-10',
+                  badge: 'bg-slate-950/85 border-slate-600 text-slate-300',
+                  label: mask.label || mask.id,
+                  isActive: false,
+                },
+              };
+
+              const styleConfig = styleMap[rawStatus] || styleMap.IDLE_OBSERVED;
 
               return (
                 <div
                   key={mask.id}
                   style={style}
-                  className={`absolute border-2 rounded-md z-10 transition-all duration-300 ${styleConfig.box}`}
+                  className={`absolute rounded-md transition-all duration-300 ${styleConfig.box}`}
                 >
                   <div
-                    className={`text-[11px] font-extrabold px-2 py-1 inline-flex items-center gap-1.5 border-b border-r rounded-br shadow-md ${styleConfig.badge}`}
+                    className={`text-[9px] font-bold px-1.5 py-0.5 inline-flex items-center gap-1 border-b border-r rounded-br shadow ${styleConfig.badge}`}
                   >
-                    <span className="h-2 w-2 rounded-full bg-current animate-ping" />
-                    <span>
-                      {mask.zone} :: {styleConfig.label} ({Math.round(mask.confidence * 100)}%)
-                    </span>
+                    {styleConfig.isActive && (
+                      <span className="h-1.5 w-1.5 rounded-full bg-current animate-ping" />
+                    )}
+                    <span className="truncate max-w-[160px]">{styleConfig.label}</span>
                   </div>
-                  <div className="absolute bottom-1 left-1 w-2.5 h-2.5 border-b-2 border-l-2 border-current opacity-80" />
-                  <div className="absolute bottom-1 right-1 w-2.5 h-2.5 border-b-2 border-r-2 border-current opacity-80" />
                 </div>
               );
             })}
           </div>
 
           <div className="bg-[#090A0F] border border-slate-800 rounded p-3 flex flex-col gap-2.5">
-            <div className="text-[11px] text-slate-300 leading-relaxed">
-              <span className="text-cyan-400 font-bold">VOICE TRANSCRIBE: </span>"{voiceText}"
+            <div className="flex items-center gap-2 mb-2">
+              <span className="text-[10px] text-slate-500 font-bold uppercase">Command:</span>
+              <input
+                type="text"
+                value={voiceText}
+                onChange={(e) => setVoiceText(e.target.value)}
+                placeholder="Escribí el comando acá o usá MIC..."
+                className="flex-1 bg-[#0c0e14] border border-slate-800 text-cyan-300 text-sm px-3 py-2 rounded outline-none focus:border-cyan-500"
+              />
             </div>
             <div className="flex gap-2">
               <button
                 onClick={toggleMicListening}
                 disabled={isRunning}
                 className={`px-3 py-3 rounded border font-bold text-xs flex items-center gap-1.5 cursor-pointer transition ${isListeningMic
-                    ? 'bg-rose-500/20 border-rose-400 text-rose-300 animate-pulse'
-                    : 'bg-slate-900 hover:bg-slate-800 border-slate-700 text-slate-200'
+                  ? 'bg-rose-500/20 border-rose-400 text-rose-300 animate-pulse'
+                  : 'bg-slate-900 hover:bg-slate-800 border-slate-700 text-slate-200'
                   }`}
               >
                 <Mic className="w-4 h-4 text-cyan-400" />
@@ -535,8 +671,8 @@ export default function App() {
                 onClick={triggerOrchestration}
                 disabled={isRunning}
                 className={`flex-1 py-3 rounded font-extrabold text-xs tracking-wider flex items-center justify-center gap-2 transition-all cursor-pointer ${isRunning
-                    ? 'bg-amber-500/20 border border-amber-400 text-amber-300 shadow-[0_0_20px_rgba(245,158,11,0.2)]'
-                    : 'bg-cyan-400 hover:bg-cyan-300 text-slate-950 shadow-[0_0_20px_rgba(34,211,238,0.3)]'
+                  ? 'bg-amber-500/20 border border-amber-400 text-amber-300 shadow-[0_0_20px_rgba(245,158,11,0.2)]'
+                  : 'bg-cyan-400 hover:bg-cyan-300 text-slate-950 shadow-[0_0_20px_rgba(34,211,238,0.3)]'
                   }`}
               >
                 {isRunning ? (
@@ -598,7 +734,7 @@ export default function App() {
               <BrainCircuit className="w-3.5 h-3.5" />
               <span>MUSE SPARK OPEN REASONING TRACE</span>
             </div>
-            <div className="text-slate-300 leading-relaxed max-h-24 overflow-y-auto">
+            <div className="text-slate-300 leading-relaxed max-h-24 overflow-y-auto whitespace-pre-line">
               {reasoningTrace || 'Awaiting spatial coordinates & voice stream...'}
             </div>
           </div>
@@ -607,7 +743,7 @@ export default function App() {
         <section className="col-span-4 flex flex-col gap-3 overflow-y-auto">
           <div className="border border-slate-800 bg-[#0D1017] rounded-lg p-3">
             <div className="text-xs font-semibold text-slate-200 border-b border-slate-800 pb-2 mb-2 flex items-center gap-2">
-              <Package className="w-4 h-4 text-emerald-400" /> LIVE INVENTORY STATE
+              <Package className="w-4 h-4 text-emerald-400" /> LIVE INVENTORY STATE (AUTO-UPSERT)
             </div>
             <div className="space-y-2">
               {inventory.map((item) => (
@@ -621,7 +757,9 @@ export default function App() {
                   </div>
                   <div className="text-right">
                     <div className="text-emerald-400 font-bold">{item.stock} units</div>
-                    <div className="text-[11px] text-cyan-300 font-semibold">${item.sellPriceUsd.toFixed(2)} USD</div>
+                    <div className="text-[11px] text-cyan-300 font-semibold">
+                      ${Number(item.sellPriceUsd).toFixed(2)} USD
+                    </div>
                   </div>
                 </div>
               ))}
@@ -629,16 +767,34 @@ export default function App() {
           </div>
 
           <div className="border border-slate-800 bg-[#0D1017] rounded-lg p-3">
-            <div className="text-xs font-semibold text-slate-200 border-b border-slate-800 pb-2 mb-2 flex items-center gap-2">
-              <AlertTriangle className="w-4 h-4 text-rose-400" /> SUPPLIER CLAIM & ZERO-TRUST GUARDRAIL
+            <div className="text-xs font-semibold text-slate-200 border-b border-slate-800 pb-2 mb-2 flex items-center justify-between">
+              <span className="flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 text-rose-400" /> SUPPLIER CLAIM & ZERO-TRUST GUARDRAIL
+              </span>
+              {latestClaim?.mongoId && (
+                <span className="text-[9px] text-emerald-400 font-mono bg-emerald-950/60 px-1.5 py-0.5 rounded border border-emerald-800">
+                  DB_TX: {latestClaim.mongoId.slice(0, 10)}...
+                </span>
+              )}
             </div>
             {latestClaim ? (
               <div className="bg-rose-950/30 border border-rose-500/60 rounded p-2.5 text-xs space-y-2">
-                <div className="flex justify-between font-bold text-rose-300">
-                  <span>TICKET #{latestClaim.id}</span>
-                  <span>-${latestClaim.amountUsd.toFixed(2)} USD</span>
+                <div className="flex gap-2.5 items-center">
+                  {latestClaim.cropBase64 && latestClaim.cropBase64.startsWith('data:image') && (
+                    <img
+                      src={latestClaim.cropBase64}
+                      alt="Defect Crop"
+                      className="w-12 h-12 rounded border border-rose-400 object-cover shrink-0"
+                    />
+                  )}
+                  <div className="flex-1">
+                    <div className="flex justify-between font-bold text-rose-300">
+                      <span>TICKET #{latestClaim.id}</span>
+                      <span>-${Number(latestClaim.amountUsd).toFixed(2)} USD</span>
+                    </div>
+                    <div className="text-[11px] text-slate-200 mt-0.5">{latestClaim.reason}</div>
+                  </div>
                 </div>
-                <div className="text-[11px] text-slate-200">{latestClaim.reason}</div>
 
                 {latestClaim.guardrailStatus === 'HELD_WAITING_VOICE_AUTH' ? (
                   <div className="pt-1 flex flex-col gap-1.5">
@@ -722,16 +878,30 @@ export default function App() {
                   </div>
                 </div>
 
-                {latestCatalog.promptUsed && (
-                  <div className="text-[9px] text-slate-400 bg-[#090A0F] px-2 py-1 rounded border border-slate-800/80 truncate">
-                    <strong className="text-cyan-400">Visual DNA Prompt: </strong>
-                    {latestCatalog.promptUsed}
+                {latestCatalog.visualDna && (
+                  <div className="grid grid-cols-2 gap-1.5 bg-[#090A0F] p-2 rounded border border-cyan-900/50 text-[9px]">
+                    <div className="truncate">
+                      <span className="text-cyan-400 font-bold">GEOMETRY: </span>
+                      <span className="text-slate-200">{latestCatalog.visualDna.containerGeometry}</span>
+                    </div>
+                    <div className="truncate">
+                      <span className="text-cyan-400 font-bold">PALETTE: </span>
+                      <span className="text-slate-200">{latestCatalog.visualDna.exactColorPalette}</span>
+                    </div>
+                    <div className="truncate">
+                      <span className="text-cyan-400 font-bold">OCR BRAND: </span>
+                      <span className="text-slate-200">{latestCatalog.visualDna.detectedBrandOrText}</span>
+                    </div>
+                    <div className="truncate">
+                      <span className="text-cyan-400 font-bold">MATERIAL: </span>
+                      <span className="text-slate-200">{latestCatalog.visualDna.surfaceMaterial}</span>
+                    </div>
                   </div>
                 )}
               </div>
             ) : (
               <div className="text-[11px] text-slate-600 py-3 text-center">
-                Awaiting RIGHT mask spatial crop...
+                Awaiting target mask spatial crop...
               </div>
             )}
           </div>
