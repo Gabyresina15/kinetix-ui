@@ -536,6 +536,7 @@ export default function App() {
 
   return (
     <div className="h-screen w-screen bg-[#090A0F] text-slate-200 flex flex-col select-none">
+      <style>{`@keyframes kinetix-scan { 0% { top: 8%; } 50% { top: 88%; } 100% { top: 8%; } }`}</style>
       <canvas ref={canvasRef} className="hidden" />
 
       <header className="h-14 border-b border-slate-800 bg-[#0D1017] px-6 flex items-center justify-between">
@@ -653,6 +654,17 @@ export default function App() {
                 <span className="text-[11px]">Upload any workspace image or start Live Cam</span>
               </button>
             )}
+            {isRunning && masks.length === 0 && (cameraActive || uploadedImage) && (
+              <div className="absolute inset-0 pointer-events-none overflow-hidden">
+                <div
+                  className="absolute left-0 right-0 h-[2px] bg-cyan-400 shadow-[0_0_16px_#22d3ee]"
+                  style={{ animation: 'kinetix-scan 1.6s ease-in-out infinite' }}
+                />
+                <div className="absolute top-2 left-2 text-[10px] font-bold tracking-wide text-cyan-200 bg-slate-950/80 border border-cyan-500/40 px-2 py-1 rounded">
+                  SCANNING 2D SCENE VIA MUSE SPARK OPEN
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="flex gap-2">
@@ -686,7 +698,9 @@ export default function App() {
               <BrainCircuit className="w-4 h-4 text-amber-400" /> AGENT EXECUTION DAG (SSE)
             </div>
             <div className="space-y-2">
-              {steps.map((step) => (
+              {steps
+              .filter((step) => step.id !== 'edge_pii' || telemetry.piiRedacted > 0)
+              .map((step) => (
                 <div key={step.id} className="border border-slate-800/80 rounded p-2 text-[11px]">
                   <div className="flex justify-between items-center">
                     <span className="font-semibold text-slate-200">{step.title}</span>
