@@ -28,6 +28,7 @@ export function useKinetixStream() {
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
       let buffer = '';
+      let receivedTerminalEvent = false;
 
       while (true) {
         const { value, done } = await reader.read();
@@ -43,6 +44,9 @@ export function useKinetixStream() {
           if (!eventMatch || !dataMatch) continue;
 
           const eventName = eventMatch[1].trim() as KinetixSseEvent['event'];
+          if (eventName === 'ORCHESTRATION_COMPLETE' || eventName === 'ORCHESTRATION_ERROR') {
+            receivedTerminalEvent = true;
+          }
           try {
             const payload = JSON.parse(dataMatch[1].trim());
             onEvent({ event: eventName, data: payload } as KinetixSseEvent);
@@ -50,6 +54,10 @@ export function useKinetixStream() {
             // skip malformed payload
           }
         }
+      }
+
+      if (!receivedTerminalEvent && !abortControllerRef.current?.signal.aborted) {
+        onError(new Error('SSE stream closed prematurely before ORCHESTRATION_COMPLETE'));
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.name === 'AbortError') return;
