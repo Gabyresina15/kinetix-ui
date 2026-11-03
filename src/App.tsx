@@ -321,22 +321,44 @@ export default function App() {
             if (tool === 'mutate_inventory' && result) {
               const invResult = result as any;
               setInventory((prev) => {
-                const exists = prev.some((item) => item.sku === invResult.sku);
-                if (exists) {
-                  return prev.map((item) =>
-                    item.sku === invResult.sku
-                      ? { ...item, name: invResult.name || item.name, stock: invResult.stock, sellPriceUsd: invResult.sellPriceUsd ?? item.sellPriceUsd, _highlightDelta: `+${invResult.delta ?? 1}` }
-                      : item
-                  );
-                }
-                return [{ sku: invResult.sku, name: invResult.name || 'Component', stock: invResult.stock ?? 1, baseCostUsd: invResult.baseCostUsd ?? 90.0, sellPriceUsd: invResult.sellPriceUsd ?? 149.0, _highlightDelta: `+${invResult.delta ?? 1}` }, ...prev];
+                const existing = prev.find((item) => item.sku === invResult.sku);
+                const updatedItem: InventoryItem = existing
+                  ? {
+                      ...existing,
+                      name: invResult.name || existing.name,
+                      stock: invResult.stock,
+                      sellPriceUsd: invResult.sellPriceUsd ?? existing.sellPriceUsd,
+                      _highlightDelta: `+${invResult.delta ?? 1}`,
+                    }
+                  : {
+                      sku: invResult.sku,
+                      name: invResult.name || 'Component',
+                      stock: invResult.stock ?? 1,
+                      baseCostUsd: invResult.baseCostUsd ?? 90.0,
+                      sellPriceUsd: invResult.sellPriceUsd ?? 149.0,
+                      _highlightDelta: `+${invResult.delta ?? 1}`,
+                    };
+                return [updatedItem, ...prev.filter((item) => item.sku !== invResult.sku)];
               });
               const mutationLine = `${invResult.sku}: ${invResult.previousStock ?? '?'}→${invResult.stock} (+${invResult.delta ?? 1})`;
-              updateStep(tool, { status: 'MUTATED', detail: mutationLine });
-              
+              setSteps((prev) =>
+                prev.map((s) =>
+                  s.id === tool
+                    ? {
+                        ...s,
+                        status: 'MUTATED',
+                        detail:
+                          s.detail && s.detail !== 'Executing operation...' && !s.detail.includes(invResult.sku)
+                            ? `${s.detail} · ${mutationLine}`
+                            : mutationLine,
+                      }
+                    : s
+                )
+              );
+
               setTimeout(() => {
                 setInventory((current) => current.map(item => item.sku === invResult.sku ? { ...item, _highlightDelta: undefined } : item));
-              }, 2000);
+              }, 4500);
             }
 
             if (tool === 'generate_studio_catalog' && result) {
@@ -370,7 +392,7 @@ export default function App() {
 
               setTimeout(() => {
                 setInventory((current) => current.map(item => priceBySku.has(item.sku) ? { ...item, _repriced: undefined } : item));
-              }, 2000);
+              }, 4500);
             }
           });
         }
@@ -774,7 +796,7 @@ export default function App() {
               <Mic className={`w-4 h-4 ${isListeningMic ? 'animate-pulse' : ''}`} /> MIC
             </button>
             
-            {phase === 'LIVE_IDLE' || phase === 'ABORTED' ? (
+            {!isBusy ? (
               <button onClick={triggerOrchestration} className="flex-1 py-2 rounded-md bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-extrabold text-[11px] uppercase tracking-widest flex items-center justify-center gap-2 transition-all shadow-[0_0_15px_rgba(6,182,212,0.4)]">
                 <Play className="w-4 h-4 fill-slate-950" /> RUN SPATIAL ORCHESTRATION (SPACEBAR)
               </button>
@@ -795,14 +817,14 @@ export default function App() {
         {/* MIDDLE COLUMN: DAG & TERMINAL */}
         <section className="col-span-4 flex flex-col gap-3 overflow-y-auto min-h-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <AgentDagPanel steps={steps} piiRedacted={telemetry.piiRedacted} />
-          <ReasoningTerminal trace={reasoningTrace} isRunning={phase !== 'LIVE_IDLE' && phase !== 'ABORTED'} />
+          <ReasoningTerminal trace={reasoningTrace} isRunning={isBusy} />
         </section>
 
         {/* RIGHT COLUMN: ERP MICRO-INTERACTIONS */}
-        <section className="col-span-3 flex flex-col gap-3 overflow-y-auto min-h-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <section className="col-span-3 flex flex-col gap-2.5 overflow-y-auto min-h-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           
           {/* INVENTORY CARD */}
-          <div className="border border-slate-800 bg-[#0A0C10] rounded-lg p-3 shadow-inner flex flex-col max-h-[35vh]">
+          <div className="border border-slate-800 bg-[#0A0C10] rounded-lg p-2.5 shadow-inner flex flex-col max-h-[22vh] shrink-0">
             <div className="text-[10px] uppercase tracking-widest font-bold text-slate-400 border-b border-slate-800/80 pb-2 mb-2 flex items-center gap-2 shrink-0">
               <Package className="w-3.5 h-3.5 text-emerald-500" />
               <span>LIVE INVENTORY STATE (UPSERT)</span>
