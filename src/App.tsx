@@ -32,6 +32,7 @@ import { useDominoQueue } from './core/useDominoQueue';
 import { TelemetryHud } from './components/TelemetryHud';
 import { ReasoningTerminal } from './components/ReasoningTerminal';
 import { AgentDagPanel } from './components/AgentDagPanel';
+import { apiUrl } from './core/apiConfig';
 
 // --- CONSTANTS ---
 const MASK_STYLE_MAP: Record<string, string> = {
@@ -50,13 +51,13 @@ const DEFAULT_PROMPT =
   'El cooler de torre con tubos de cobre vino con una aleta golpeada, abrí reclamo. Sumá al stock los dos módulos de memoria RAM y el disco SSD M.2. Armame la foto de estudio para la fuente de poder modular y recalculá precios con 32% de margen.';
 
 const INITIAL_STEPS: ExecutionStep[] = [
-  { id: 'edge_pii', title: 'Edge Cognitive Filter & PII Redaction', model: 'muse-spark-open-1026', status: 'PENDING' },
-  { id: 'sam_lock', title: '2D Spatial Grounding & Pixel Crop', model: 'Muse Spark Vision + Sharp', status: 'PENDING' },
-  { id: 'spark_plan', title: 'Multi-Tool DAG Planning', model: 'Muse Spark Open (Baseten)', status: 'PENDING' },
+  { id: 'edge_pii', title: 'PII-Aware Crop Gate', model: 'Crop Gate', status: 'PENDING' },
+  { id: 'sam_lock', title: '2D Spatial Grounding & Box Refinement', model: 'SAM 3.1 + Sharp', status: 'PENDING' },
+  { id: 'spark_plan', title: 'Multi-Tool Spatial Plan', model: 'Muse Spark Open (Baseten)', status: 'PENDING' },
   { id: 'quarantine_and_claim', title: 'Tool: Quarantine & Supplier Claim', model: 'Action Engine', status: 'PENDING' },
   { id: 'mutate_inventory', title: 'Tool: Inventory SKU Auto-Upsert', model: 'Action Engine', status: 'PENDING' },
   { id: 'generate_studio_catalog', title: 'Tool: Crop-to-Studio Synthesis', model: 'Muse Image', status: 'PENDING' },
-  { id: 'recalculate_margins_vm', title: 'Tool: Financial Margin Sandbox', model: 'Muse Code (node:vm)', status: 'PENDING' },
+  { id: 'recalculate_margins_vm', title: 'Tool: Financial Margin Sandbox', model: 'Muse Code', status: 'PENDING' },
 ];
 
 export default function App() {
@@ -116,7 +117,7 @@ export default function App() {
 
   const fetchLiveLedger = useCallback(async () => {
     try {
-      const res = await fetch('http://localhost:4000/api/live-ledger');
+      const res = await fetch(apiUrl('/api/live-ledger'));
       const data = await res.json();
       if (data.ok && Array.isArray(data.inventory)) {
         setInventory(data.inventory);
@@ -163,7 +164,7 @@ export default function App() {
     switch (tool) {
       case 'quarantine_and_claim': return 'QUARANTINED';
       case 'mutate_inventory': return '+ STOCK';
-      case 'generate_studio_catalog': return '8K SYNTH';
+      case 'generate_studio_catalog': return 'STUDIO SYNTH';
       case 'recalculate_margins_vm': return 'REPRICED';
       default: return 'UPDATED';
     }
@@ -247,13 +248,39 @@ export default function App() {
         }
 
         if (event === 'SPARK_PLAN_LOCKED') {
+          const plannedTools = new Set<string>(
+            Array.isArray((data.plan as any)?.actions)
+              ? (data.plan as any).actions.map((a: any) => String(a.tool))
+              : []
+          );
           enqueue(() => {
-            setTelemetry((t) => ({ ...t, sparkMs: data.latencyMs || 440 }));
-            updateStep('spark_plan', { status: 'MUTATED', latencyMs: data.latencyMs || 440, detail: data.plan?.summary || 'Spatial DAG plan locked' });
+            setTelemetry((t) => ({ ...t, sparkMs: data.latencyMs || t.sparkMs }));
+            updateStep('spark_plan', {
+              status: 'MUTATED',
+              latencyMs: data.latencyMs,
+              detail: data.plan?.summary || 'Spatial plan locked',
+            });
 
             ['quarantine_and_claim', 'mutate_inventory', 'generate_studio_catalog', 'recalculate_margins_vm'].forEach(
-              (id) => updateStep(id, { status: 'RUNNING', detail: 'Executing operation...' })
+              (id) =>
+                updateStep(
+                  id,
+                  plannedTools.size === 0 || plannedTools.has(id)
+                    ? { status: 'RUNNING', detail: 'Executing operation...' }
+                    : { status: 'SKIPPED', detail: 'Not requested by operator command' }
+                )
             );
+          });
+        }
+
+        if (event === 'TOOL_FAILED') {
+          const { tool, error, latencyMs } = data;
+          enqueue(() => {
+            updateStep(tool, {
+              status: 'FAILED',
+              latencyMs,
+              detail: error || 'Tool execution failed',
+            });
           });
         }
 
@@ -276,7 +303,7 @@ export default function App() {
               const held = claimResult.guardrailStatus === 'HELD_WAITING_VOICE_AUTH';
               updateStep(tool, {
                 status: 'MUTATED',
-                detail: held ? `Claim #${claimResult.id} (-$${Number(claimResult.amountUsd).toFixed(2)}) exceeds auto-limit` : `Claim #${claimResult.id} auto-approved`,
+                detail: held ? `Claim #${claimResult.id} (-$${Number(claimResult.amountUsd).toFixed(2)}) held by $50 guardrail` : `Claim #${claimResult.id} auto-approved`,
               });
             }
 
@@ -287,7 +314,7 @@ export default function App() {
                 if (exists) {
                   return prev.map((item) =>
                     item.sku === invResult.sku
-                      ? { ...item, stock: invResult.stock, sellPriceUsd: invResult.sellPriceUsd ?? item.sellPriceUsd, _highlightDelta: `+${invResult.delta ?? 1}` }
+                      ? { ...item, name: invResult.name || item.name, stock: invResult.stock, sellPriceUsd: invResult.sellPriceUsd ?? item.sellPriceUsd, _highlightDelta: `+${invResult.delta ?? 1}` }
                       : item
                   );
                 }
@@ -308,26 +335,45 @@ export default function App() {
             }
 
             if (tool === 'recalculate_margins_vm' && result) {
-              const vmResult = result as VmExecutionResult;
-              setVmExecution(vmResult);
-              const targetSku = vmResult.updatedSku || 'SKU-DDR5-32GB-KIT';
+              const vmResult = result as VmExecutionResult & { cleanCodeShownInUI?: string; repricedSkus?: Array<{ sku: string; finalPrice: number }> };
+              const normalizedVm: VmExecutionResult = {
+                ...vmResult,
+                executedCode: vmResult.executedCode || vmResult.cleanCodeShownInUI || '',
+              };
+              setVmExecution(normalizedVm);
+              const batch = Array.isArray(vmResult.repricedSkus) && vmResult.repricedSkus.length > 0
+                ? vmResult.repricedSkus
+                : [{ sku: vmResult.updatedSku || 'SKU-DDR5-32GB-KIT', finalPrice: vmResult.finalPrice }];
+              const priceBySku = new Map(batch.map((b) => [b.sku, b.finalPrice]));
               setInventory((prev) => prev.map((item) =>
-                  item.sku === targetSku ? { ...item, sellPriceUsd: vmResult.finalPrice, _repriced: true } : item
+                priceBySku.has(item.sku) ? { ...item, sellPriceUsd: priceBySku.get(item.sku)!, _repriced: true } : item
               ));
-              updateStep(tool, { status: 'MUTATED', detail: `${targetSku} repriced to $${vmResult.finalPrice} USD` });
+              const detailText = batch.length > 1
+                ? `Repriced ${batch.length} SKUs (${batch.map((b) => `${b.sku}→$${b.finalPrice}`).join(', ')})`
+                : `${batch[0].sku} repriced to $${batch[0].finalPrice} USD`;
+              updateStep(tool, { status: 'MUTATED', detail: detailText });
 
               setTimeout(() => {
-                setInventory((current) => current.map(item => item.sku === targetSku ? { ...item, _repriced: undefined } : item));
+                setInventory((current) => current.map(item => priceBySku.has(item.sku) ? { ...item, _repriced: undefined } : item));
               }, 2000);
             }
+          });
+        }
+
+        if (event === 'ORCHESTRATION_ERROR') {
+          enqueue(() => {
+            setPhase('FAULT' as any);
+            setSteps((prev) =>
+              prev.map((s) => (s.status === 'RUNNING' ? { ...s, status: 'FAILED', detail: data.message } : s))
+            );
           });
         }
 
         if (event === 'ORCHESTRATION_COMPLETE') {
           enqueue(() => {
             setPhase('FRAME_LOCKED');
-            setSteps((prev) => prev.map(s => s.status === 'RUNNING' ? { ...s, status: 'PENDING', detail: 'Tool skipped (not requested by prompt)' } : s));
-            speakTactical("Spatial lock complete. Actionable assets indexed. Check reasoning trace for zero-trust interventions.");
+            setSteps((prev) => prev.map(s => s.status === 'RUNNING' ? { ...s, status: 'SKIPPED', detail: 'Not executed in this plan' } : s));
+            speakTactical("Spatial lock complete. Actionable assets indexed.");
 
             if (data.storeState && Array.isArray(data.storeState.inventory)) {
               setInventory(data.storeState.inventory);
@@ -354,21 +400,29 @@ export default function App() {
 
   const authorizeGuardrailClaim = useCallback(async () => {
     try {
-      const res = await fetch('http://localhost:4000/api/confirm-guardrail', { method: 'POST' });
+      const res = await fetch(apiUrl('/api/confirm-guardrail'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ claimId: latestClaim?.id }),
+      });
       const data = await res.json();
       if (data.ok && data.claim) {
         setLatestClaim(data.claim);
         updateStep('quarantine_and_claim', { detail: `Claim #${data.claim.id} AUTHORIZED (${data.claim.dispatchChannel})` });
-        speakTactical("Supplier claim authorized and dispatched to Telegram.");
+        speakTactical(
+          data.deliveredExternally
+            ? 'Supplier claim authorized and dispatched to Telegram.'
+            : 'Supplier claim authorized and recorded in local ledger.'
+        );
       }
     } catch (err) {
       console.error('Guardrail confirm failed', err);
     }
-  }, [speakTactical, updateStep]);
+  }, [latestClaim?.id, speakTactical, updateStep]);
 
   const resetDemoState = useCallback(async () => {
     try {
-      await fetch('http://localhost:4000/api/reset-demo', { method: 'POST' });
+      await fetch(apiUrl('/api/reset-demo'), { method: 'POST' });
     } catch {}
     setMasks([]);
     setReasoningTrace('');
@@ -584,24 +638,25 @@ export default function App() {
               const suggestedSku = `SKU-${rawLabel.toUpperCase().replace(/[^A-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 18) || 'ASSET'}`;
               const hasPendingTriage = inventory.some((item) => item.sku.startsWith('SKU-TRIAGE-'));
 
-              const commitStockWithSku = (finalSku: string) => {
+              const commitStockWithSku = async (finalSku: string) => {
                 const cleanSku = finalSku.trim().toUpperCase() || suggestedSku;
-                setInventory((prev) => {
-                  if (prev.some((item) => item.sku.startsWith('SKU-TRIAGE-'))) {
-                    return prev.map((item) =>
-                      item.sku.startsWith('SKU-TRIAGE-')
-                        ? { ...item, sku: cleanSku, name: `${rawLabel} (Verified)`, _highlightDelta: 'CLEARED' }
-                        : item
+                try {
+                  const res = await fetch(apiUrl('/api/triage/resolve'), {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ maskId: selectedMaskId, sku: cleanSku, name: rawLabel, action: 'STOCK', delta: 1 }),
+                  });
+                  const data = await res.json();
+                  if (data.ok && Array.isArray(data.inventory)) {
+                    setInventory(
+                      data.inventory.map((it: InventoryItem) =>
+                        it.sku === cleanSku ? { ...it, _highlightDelta: hasPendingTriage ? 'CLEARED' : '+1' } : it
+                      )
                     );
                   }
-                  const exists = prev.some((item) => item.sku === cleanSku);
-                  if (exists) {
-                    return prev.map((item) =>
-                      item.sku === cleanSku ? { ...item, stock: item.stock + 1, _highlightDelta: '+1' } : item
-                    );
-                  }
-                  return [{ sku: cleanSku, name: rawLabel, stock: 1, baseCostUsd: 85.0, sellPriceUsd: 115.0, _highlightDelta: '+1' }, ...prev];
-                });
+                } catch (err) {
+                  console.error('Triage stock resolve failed', err);
+                }
                 updateStep('mutate_inventory', { status: 'MUTATED', detail: `Supervisor confirmed ${cleanSku} (+1)` });
                 setActivePulse({ id: selectedMaskId, actionText: hasPendingTriage ? 'CLEARED' : '+1 STOCK' });
                 setMasks((prev) =>
@@ -643,7 +698,7 @@ export default function App() {
                       defaultValue={suggestedSku}
                       className="w-full bg-slate-900 border border-amber-500/50 rounded px-2 py-1 text-[10px] font-mono text-amber-200 focus:outline-none focus:border-cyan-400"
                       onKeyDown={(e) => {
-                        if (e.key === 'Enter') commitStockWithSku(e.currentTarget.value);
+                        if (e.key === 'Enter') void commitStockWithSku(e.currentTarget.value);
                       }}
                     />
                   </div>
@@ -652,7 +707,7 @@ export default function App() {
                     <button
                       onClick={() => {
                         const inputEl = document.getElementById('supervisor-sku-input') as HTMLInputElement | null;
-                        commitStockWithSku(inputEl?.value || suggestedSku);
+                        void commitStockWithSku(inputEl?.value || suggestedSku);
                       }}
                       className="w-full py-1.5 bg-emerald-950/70 hover:bg-emerald-900 border border-emerald-700 rounded text-[10px] font-bold text-emerald-300 uppercase tracking-widest transition-colors flex items-center justify-center gap-1.5 cursor-pointer"
                     >
@@ -660,21 +715,30 @@ export default function App() {
                     </button>
 
                     <button
-                      onClick={() => {
+                      onClick={async () => {
                         const inputEl = document.getElementById('supervisor-sku-input') as HTMLInputElement | null;
                         const confirmedSku = (inputEl?.value || suggestedSku).trim().toUpperCase();
+                        try {
+                          const res = await fetch(apiUrl('/api/triage/resolve'), {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                              maskId: selectedMaskId,
+                              sku: confirmedSku,
+                              name: rawLabel,
+                              action: 'CLAIM',
+                              reason: `Defecto verificado en triaje sobre ${rawLabel} (${confirmedSku})`,
+                              cropBase64: selectedMask?.cropBase64,
+                            }),
+                          });
+                          const data = await res.json();
+                          if (data.ok && data.claim) {
+                            setLatestClaim(data.claim);
+                          }
+                        } catch (err) {
+                          console.error('Triage claim resolve failed', err);
+                        }
                         updateStep('quarantine_and_claim', { status: 'MUTATED', detail: `Supervisor claim opened for ${confirmedSku}` });
-                        setLatestClaim({
-                          id: `CLM-${Math.floor(100 + Math.random() * 900)}`,
-                          maskId: selectedMaskId,
-                          objectLabel: confirmedSku,
-                          amountUsd: 85,
-                          reason: `Defecto verificado en triaje sobre ${rawLabel} (${confirmedSku})`,
-                          guardrailStatus: 'HELD_WAITING_VOICE_AUTH',
-                          thresholdUsd: 50,
-                          cropBase64: selectedMask?.cropBase64,
-                          timestamp: new Date().toISOString()
-                        });
                         setActivePulse({ id: selectedMaskId, actionText: 'QUARANTINED' });
                         setMasks((prev) => prev.map((m) => (m.id === selectedMaskId ? { ...m, assignedActionStatus: 'QUARANTINED', label: confirmedSku } : m)));
                         setTimeout(() => setActivePulse(null), 350);
@@ -697,7 +761,7 @@ export default function App() {
             
             {phase === 'LIVE_IDLE' || phase === 'ABORTED' ? (
               <button onClick={triggerOrchestration} className="flex-1 py-2 rounded-md bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-extrabold text-[11px] uppercase tracking-widest flex items-center justify-center gap-2 transition-all shadow-[0_0_15px_rgba(6,182,212,0.4)]">
-                <Play className="w-4 h-4 fill-slate-950" /> TRIGGER GOLDEN PATH (SPACEBAR)
+                <Play className="w-4 h-4 fill-slate-950" /> RUN SPATIAL ORCHESTRATION (SPACEBAR)
               </button>
             ) : (
               <button onClick={abortRun} className="flex-1 py-2 rounded-md bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-[11px] uppercase tracking-widest flex items-center justify-center gap-2 transition-all shadow-[0_0_15px_rgba(225,29,72,0.4)]">
@@ -819,16 +883,18 @@ export default function App() {
                     </div>
                   </div>
                   <div className="space-y-1">
-                    <div className="text-[8px] uppercase tracking-wider text-slate-500 font-bold">AFTER // MUSE IMAGE 8K</div>
+                    <div className="text-[8px] uppercase tracking-wider text-slate-500 font-bold">AFTER // MUSE IMAGE STUDIO</div>
                     <div className="relative rounded border border-cyan-800/60 overflow-hidden aspect-video bg-[#050608] shadow-[0_0_12px_rgba(34,211,238,0.15)] group">
                        <img src={latestCatalog.studioImageUrl} alt="Studio" className="w-full h-full object-cover" />
-                       <div className="absolute top-1 right-1 bg-cyan-950/80 backdrop-blur border border-cyan-500/50 px-1 py-0.5 rounded-[2px] text-[8px] font-mono text-cyan-300">SYNTH_8K</div>
+                       <div className="absolute top-1 right-1 bg-cyan-950/80 backdrop-blur border border-cyan-500/50 px-1 py-0.5 rounded-[2px] text-[8px] font-mono text-cyan-300">
+                         {(latestCatalog as any).resolution || (latestCatalog.usedLiveApi ? 'MUSE_IMG' : 'FALLBACK')}
+                       </div>
                        <a
                          href={latestCatalog.studioImageUrl}
-                         download={`Studio-Render-${latestCatalog.title.replace(/\s+/g, '-')}.jpg`}
+                         download={`Studio-Render-${latestCatalog.title.replace(/\s+/g, '-')}.png`}
                          className="absolute inset-0 bg-cyan-950/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-cyan-300 font-bold text-[10px] tracking-widest gap-2 backdrop-blur-sm cursor-pointer"
                        >
-                         <Download className="w-4 h-4" /> DOWNLOAD 8K ASSET
+                         <Download className="w-4 h-4" /> DOWNLOAD STUDIO ASSET
                        </a>
                     </div>
                   </div>

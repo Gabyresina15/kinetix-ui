@@ -20,6 +20,8 @@ export const AgentDagPanel = ({ steps, piiRedacted }: { steps: ExecutionStep[]; 
                 <XCircle className="w-3.5 h-3.5 text-rose-500 drop-shadow-[0_0_4px_#f43f5e]" />
               ) : step.status === 'RUNNING' ? (
                 <Loader2 className="w-3.5 h-3.5 text-cyan-400 animate-spin" />
+              ) : step.status === 'SKIPPED' ? (
+                <span className="text-[8px] font-mono uppercase px-1 py-0.5 rounded bg-slate-800 text-slate-400">SKIP</span>
               ) : (
                 <div className="w-2.5 h-2.5 rounded-full border border-slate-600" />
               )}

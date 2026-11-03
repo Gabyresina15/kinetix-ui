@@ -1,5 +1,6 @@
 import { useRef, useCallback, useEffect } from 'react';
 import { KinetixSseEvent } from './types';
+import { apiUrl } from './apiConfig';
 
 export function useKinetixStream() {
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -13,7 +14,7 @@ export function useKinetixStream() {
     abortControllerRef.current = new AbortController();
 
     try {
-      const response = await fetch('http://localhost:4000/api/orchestrate-stream', {
+      const response = await fetch(apiUrl('/api/orchestrate-stream'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ frameBase64, voiceTranscript: voiceText }),

@@ -6,7 +6,7 @@ export const ReasoningTerminal = ({ trace, isRunning }: { trace: string; isRunni
   return (
     <div className="border border-slate-800 bg-[#0A0C10] rounded-lg p-3 flex-1 flex flex-col min-h-0 relative shadow-inner">
       <div className="text-[10px] uppercase tracking-widest font-bold text-slate-400 border-b border-slate-800/80 pb-2 mb-2 flex items-center gap-2">
-        <Terminal className="w-3.5 h-3.5 text-cyan-500" /> MUSE SPARK OPEN REASONING TRACE
+        <Terminal className="w-3.5 h-3.5 text-cyan-500" /> SPATIAL PLAN AUDIT &amp; SPARK TRACE
       </div>
       <div className="text-[10px] font-mono text-slate-400 whitespace-pre-wrap leading-relaxed overflow-y-auto [scrollbar-width:none] flex-1">
         {lines.map((line, i) => {
