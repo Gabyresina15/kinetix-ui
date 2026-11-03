@@ -19,6 +19,7 @@ export const ReasoningTerminal = ({ trace, isRunning }: { trace: string; isRunni
             if (tag === 'SEMANTIC_BINDING') tagColor = 'text-emerald-300 bg-emerald-950/60 border border-emerald-800/50';
             if (tag === 'GUARDRAIL_AUDIT') tagColor = 'text-amber-300 bg-amber-950/60 border border-amber-800/50';
             if (tag === 'VISUAL_DNA') tagColor = 'text-purple-300 bg-purple-950/60 border border-purple-800/50';
+            if (tag === 'LIVE_SPARK_STREAM') tagColor = 'text-sky-300 bg-sky-950/60 border border-sky-700/50 animate-pulse';
 
             return (
               <div key={i} className="mb-1.5 flex flex-col sm:flex-row sm:items-start gap-1.5">

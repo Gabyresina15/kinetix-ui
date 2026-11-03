@@ -111,8 +111,11 @@ export interface StudioCatalogResult {
 
 export interface VmExecutionResult {
   finalPrice: number;
-  executedCode: string; // Unificado entre orchestratorCore.ts y el Frontend
+  executedCode: string;
   usedFallback: boolean;
+  sandboxEngine?: string;
+  invariantsPassed?: boolean;
+  policyModelUsed?: string;
   updatedSku: string;
   targetMarginPercent: number;
   taxRatePercent: number;
@@ -147,6 +150,7 @@ export type KinetixSseEvent =
         objects: SpatialMask[];
       };
     }
+  | { event: 'SPARK_REASONING_DELTA'; data: { model: string; elapsedMs: number; snippet: string } }
   | { event: 'SPARK_REASONING_TRACE'; data: { model: string; reasoning: string } }
   | { event: 'SPARK_PLAN_LOCKED'; data: { model: string; latencyMs: number; plan: { summary: string; requestedTools: DagNodeId[] } } }
   | { event: 'TOOL_MUTATED'; data: ToolMutationPayload }

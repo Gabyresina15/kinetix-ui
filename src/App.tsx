@@ -56,8 +56,8 @@ const INITIAL_STEPS: ExecutionStep[] = [
   { id: 'spark_plan', title: 'Multi-Tool Spatial Plan', model: 'Muse Spark Open (Baseten)', status: 'PENDING' },
   { id: 'quarantine_and_claim', title: 'Tool: Quarantine & Supplier Claim', model: 'Action Engine', status: 'PENDING' },
   { id: 'mutate_inventory', title: 'Tool: Inventory SKU Auto-Upsert', model: 'Action Engine', status: 'PENDING' },
-  { id: 'generate_studio_catalog', title: 'Tool: Crop-to-Studio Synthesis', model: 'Muse Image', status: 'PENDING' },
-  { id: 'recalculate_margins_vm', title: 'Tool: Financial Margin Sandbox', model: 'Muse Code', status: 'PENDING' },
+  { id: 'generate_studio_catalog', title: 'Tool: Crop-to-Studio Synthesis', model: 'Muse Image 1.0', status: 'PENDING' },
+  { id: 'recalculate_margins_vm', title: 'Tool: Policy Synth & WASM Sandbox', model: 'Muse Wonder 1.0 + QuickJS WASM', status: 'PENDING' },
 ];
 
 export default function App() {
@@ -243,6 +243,17 @@ export default function App() {
           });
         }
 
+        if (event === 'SPARK_REASONING_DELTA') {
+          if (data.snippet) {
+            setReasoningTrace(data.snippet);
+            updateStep('spark_plan', {
+              status: 'RUNNING',
+              latencyMs: data.elapsedMs,
+              detail: 'Streaming multimodal spatial reasoning from Baseten...',
+            });
+          }
+        }
+
         if (event === 'SPARK_REASONING_TRACE') {
           setReasoningTrace(data.reasoning || '');
         }
@@ -351,7 +362,11 @@ export default function App() {
               const detailText = batch.length > 1
                 ? `Repriced ${batch.length} SKUs (${batch.map((b) => `${b.sku}→$${b.finalPrice}`).join(', ')})`
                 : `${batch[0].sku} repriced to $${batch[0].finalPrice} USD`;
-              updateStep(tool, { status: 'MUTATED', detail: detailText });
+              updateStep(tool, {
+                status: 'MUTATED',
+                model: normalizedVm.policyModelUsed || 'Muse Wonder 1.0 + QuickJS WASM',
+                detail: detailText,
+              });
 
               setTimeout(() => {
                 setInventory((current) => current.map(item => priceBySku.has(item.sku) ? { ...item, _repriced: undefined } : item));
@@ -925,22 +940,22 @@ export default function App() {
             )}
           </div>
 
-          {/* MUSE CODE FINANCIAL SANDBOX CARD */}
+          {/* MUSE WONDER POLICY & QUICKJS WASM SANDBOX CARD */}
           <div className="border border-slate-800 bg-[#0A0C10] rounded-lg p-3 shadow-inner shrink-0 flex flex-col min-h-0">
             <div className="text-[10px] uppercase tracking-widest font-bold text-slate-400 border-b border-slate-800/80 pb-2 mb-2 flex items-center gap-2">
-              <Terminal className="w-3.5 h-3.5 text-amber-400" /> MUSE CODE FINANCIAL SANDBOX (node:vm)
+              <Terminal className="w-3.5 h-3.5 text-amber-400" /> MUSE WONDER POLICY SANDBOX (QuickJS WASM)
             </div>
             {vmExecution ? (
               <div className="space-y-1.5">
-                <pre className="text-[9px] font-mono text-cyan-300 bg-[#050608] p-2 rounded border border-slate-800/80 overflow-x-auto leading-relaxed">
+                <pre className="text-[9px] font-mono text-cyan-300 bg-[#050608] p-2 rounded border border-slate-800/80 overflow-x-auto leading-relaxed max-h-32 overflow-y-auto">
                   {vmExecution.executedCode}
                 </pre>
                 <div className="text-[10px] font-mono text-emerald-400">
-                  {`// Output Price: $${Number(vmExecution.finalPrice).toFixed(2)} USD (fallback: ${Boolean(vmExecution.usedFallback)})`}
+                  {`// Output: $${Number(vmExecution.finalPrice).toFixed(2)} USD | engine: ${vmExecution.sandboxEngine || 'quickjs-wasm'} | invariants: ${vmExecution.invariantsPassed !== false ? 'PASS' : 'FAIL'} | fallback: ${Boolean(vmExecution.usedFallback)}`}
                 </div>
               </div>
             ) : (
-              <div className="text-[10px] text-slate-600 text-center py-3 italic">Awaiting margin sandbox execution...</div>
+              <div className="text-[10px] text-slate-600 text-center py-3 italic">Awaiting WASM policy sandbox execution...</div>
             )}
           </div>
         </section>
