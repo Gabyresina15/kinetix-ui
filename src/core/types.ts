@@ -45,6 +45,7 @@ export interface TelemetryState {
   glimmerMs: number;
   samMs: number;
   sparkMs: number;
+  voiceMs?: number;
   segmenter: string;
   tokensSavedPct: number;
   piiRedacted: number;
@@ -126,6 +127,34 @@ export interface InventoryMutationResult extends InventoryItem {
   delta: number;
   mongoId: string;
   maskId: string;
+}
+
+export type AuditTxType =
+  | 'STOCK_DELTA'
+  | 'WASM_REPRICE'
+  | 'SUPPLIER_CLAIM'
+  | 'GUARDRAIL_AUTHORIZED'
+  | 'STUDIO_SYNTH'
+  | 'SUPERVISOR_TRIAGE'
+  | 'COMPENSATING_UNDO';
+
+export interface AuditLedgerBlock {
+  index: number;
+  txId: string;
+  timestamp: string;
+  type: AuditTxType;
+  skuOrRef: string;
+  summary: string;
+  prevHash: string;
+  txHash: string;
+  reversible: boolean;
+  rolledBack: boolean;
+}
+
+export interface AuditChainIntegrity {
+  valid: boolean;
+  blockCount: number;
+  headHash: string;
 }
 
 // --- 3. UNIÓN DISCRIMINADA DE HERRAMIENTAS Y STREAM SSE ---

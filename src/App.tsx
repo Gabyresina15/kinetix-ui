@@ -13,7 +13,9 @@ import {
   AlertTriangle,
   Scan,
   CheckCircle2,
-  Download
+  Download,
+  Lock,
+  Loader2
 } from 'lucide-react';
 
 import {
@@ -25,14 +27,18 @@ import {
   StudioCatalogResult,
   VmExecutionResult,
   MaskStatus,
+  AuditLedgerBlock,
+  AuditChainIntegrity,
 } from './core/types';
 import { useSpatialCamera } from './core/useSpatialCamera';
 import { useKinetixStream } from './core/useKinetixStream';
 import { useDominoQueue } from './core/useDominoQueue';
+import { useMuseVoiceRecorder } from './core/useMuseVoiceRecorder';
 import { TelemetryHud } from './components/TelemetryHud';
 import { ReasoningTerminal } from './components/ReasoningTerminal';
 import { AgentDagPanel } from './components/AgentDagPanel';
-import { apiUrl } from './core/apiConfig';
+import { AuditLedgerDrawer } from './components/AuditLedgerDrawer';
+import { apiUrl, apiHeaders } from './core/apiConfig';
 
 // --- CONSTANTS ---
 const MASK_STYLE_MAP: Record<string, string> = {
@@ -83,8 +89,16 @@ export default function App() {
   const [stageSize, setStageSize] = useState({ w: 0, h: 0 });
   const [phase, setPhase] = useState<'LIVE_IDLE' | 'SCANNING_SCENE' | 'EXECUTING_DAG' | 'FRAME_LOCKED' | 'ABORTED'>('LIVE_IDLE');
   const [flashEffect, setFlashEffect] = useState(false);
-  const [isListeningMic, setIsListeningMic] = useState(false);
-  const [shouldAutoTrigger, setShouldAutoTrigger] = useState(false);
+  const [voiceBanner, setVoiceBanner] = useState<string | null>(null);
+
+  const [ledgerOpen, setLedgerOpen] = useState(false);
+  const [auditBlocks, setAuditBlocks] = useState<AuditLedgerBlock[]>([]);
+  const [auditIntegrity, setAuditIntegrity] = useState<AuditChainIntegrity>({
+    valid: true,
+    blockCount: 0,
+    headHash: '0000000000000000000000000000000000000000000000000000000000000000',
+  });
+  const [undoingTxId, setUndoingTxId] = useState<string | null>(null);
 
   const isBusy = phase === 'SCANNING_SCENE' || phase === 'EXECUTING_DAG';
 
@@ -104,7 +118,7 @@ export default function App() {
   }, [ttsEnabled]);
 
   const [telemetry, setTelemetry] = useState<TelemetryState>({
-    glimmerMs: 0, samMs: 0, sparkMs: 0, segmenter: 'Sharp crop', tokensSavedPct: 0, piiRedacted: 0,
+    glimmerMs: 0, samMs: 0, sparkMs: 0, voiceMs: 0, segmenter: 'Sharp crop', tokensSavedPct: 0, piiRedacted: 0,
   });
 
   const [steps, setSteps] = useState<ExecutionStep[]>(INITIAL_STEPS);
@@ -115,9 +129,60 @@ export default function App() {
   const [voiceText, setVoiceText] = useState(DEFAULT_PROMPT);
   const [reasoningTrace, setReasoningTrace] = useState('');
 
+  const { voiceStatus, toggleRecording, cancelRecording } = useMuseVoiceRecorder(
+    ({ transcript, latencyMs, modelUsed, biasedKeywordsCount }) => {
+      setVoiceText(transcript);
+      setTelemetry((prev) => ({ ...prev, voiceMs: latencyMs }));
+      setVoiceBanner(
+        `${modelUsed} · ${latencyMs}ms${biasedKeywordsCount ? ` · ${biasedKeywordsCount} SKU bias terms` : ''}`
+      );
+    },
+    (errMsg) => {
+      setVoiceBanner(`Voice ASR Notice: ${errMsg}`);
+    }
+  );
+
+  const fetchAuditLedger = useCallback(async () => {
+    try {
+      const res = await fetch(apiUrl('/api/audit-ledger'), { headers: apiHeaders() });
+      const data = await res.json();
+      if (data.ok) {
+        if (Array.isArray(data.blocks)) setAuditBlocks(data.blocks);
+        if (data.integrity) setAuditIntegrity(data.integrity);
+      }
+    } catch (err) {
+      console.error('Failed to sync SHA-256 audit ledger', err);
+    }
+  }, []);
+
+  const handleUndoTx = useCallback(async (txId: string) => {
+    setUndoingTxId(txId);
+    try {
+      const res = await fetch(apiUrl('/api/audit-ledger/undo'), {
+        method: 'POST',
+        headers: apiHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ txId }),
+      });
+      const data = await res.json();
+      if (data.ok) {
+        if (Array.isArray(data.inventory)) setInventory(data.inventory);
+        if (Array.isArray(data.claims)) {
+          setLatestClaim(data.claims.length > 0 ? data.claims[0] : null);
+        }
+        if (Array.isArray(data.blocks)) setAuditBlocks(data.blocks);
+        if (data.integrity) setAuditIntegrity(data.integrity);
+        speakTactical('Compensating transaction committed to SHA-256 ledger.');
+      }
+    } catch (err) {
+      console.error('Compensating undo failed', err);
+    } finally {
+      setUndoingTxId(null);
+    }
+  }, [speakTactical]);
+
   const fetchLiveLedger = useCallback(async () => {
     try {
-      const res = await fetch(apiUrl('/api/live-ledger'));
+      const res = await fetch(apiUrl('/api/live-ledger'), { headers: apiHeaders() });
       const data = await res.json();
       if (data.ok && Array.isArray(data.inventory)) {
         setInventory(data.inventory);
@@ -129,7 +194,8 @@ export default function App() {
 
   useEffect(() => {
     fetchLiveLedger();
-  }, [fetchLiveLedger]);
+    fetchAuditLedger();
+  }, [fetchLiveLedger, fetchAuditLedger]);
 
   useEffect(() => {
     const el = stageRef.current;
@@ -190,7 +256,7 @@ export default function App() {
     setLatestClaim(null);
     setLatestCatalog(null);
     setVmExecution(null);
-    setTelemetry({ glimmerMs: 0, samMs: 0, sparkMs: 0, segmenter: 'Sharp crop', tokensSavedPct: 0, piiRedacted: 0 });
+    setTelemetry((prev) => ({ glimmerMs: 0, samMs: 0, sparkMs: 0, voiceMs: prev.voiceMs, segmenter: 'Sharp crop', tokensSavedPct: 0, piiRedacted: 0 }));
     setSteps(
       INITIAL_STEPS.map((s, idx) => ({
         ...s,
@@ -415,6 +481,7 @@ export default function App() {
             if (data.storeState && Array.isArray(data.storeState.inventory)) {
               setInventory(data.storeState.inventory);
             }
+            void fetchAuditLedger();
           });
         }
       },
@@ -425,7 +492,7 @@ export default function App() {
         });
       }
     );
-  }, [phase, cameraActive, uploadedImage, voiceText, captureFrameBase64, clearQueue, enqueue, speakTactical, runStream, updateStep, fetchLiveLedger]);
+  }, [phase, cameraActive, uploadedImage, voiceText, captureFrameBase64, clearQueue, enqueue, speakTactical, runStream, updateStep, fetchLiveLedger, fetchAuditLedger]);
 
   const abortRun = useCallback(() => {
     abortStream();
@@ -439,13 +506,14 @@ export default function App() {
     try {
       const res = await fetch(apiUrl('/api/confirm-guardrail'), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: apiHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ claimId: latestClaim?.id }),
       });
       const data = await res.json();
       if (data.ok && data.claim) {
         setLatestClaim(data.claim);
         updateStep('quarantine_and_claim', { detail: `Claim #${data.claim.id} AUTHORIZED (${data.claim.dispatchChannel})` });
+        void fetchAuditLedger();
         speakTactical(
           data.deliveredExternally
             ? 'Supplier claim authorized and dispatched to Telegram.'
@@ -455,12 +523,14 @@ export default function App() {
     } catch (err) {
       console.error('Guardrail confirm failed', err);
     }
-  }, [latestClaim?.id, speakTactical, updateStep]);
+  }, [latestClaim?.id, speakTactical, updateStep, fetchAuditLedger]);
 
   const resetDemoState = useCallback(async () => {
     try {
-      await fetch(apiUrl('/api/reset-demo'), { method: 'POST' });
+      await fetch(apiUrl('/api/reset-demo'), { method: 'POST', headers: apiHeaders() });
     } catch {}
+    cancelRecording();
+    setVoiceBanner(null);
     setMasks([]);
     setReasoningTrace('');
     setLatestClaim(null);
@@ -471,41 +541,11 @@ export default function App() {
     clearQueue();
     abortStream();
     setVoiceText(DEFAULT_PROMPT);
-    setTelemetry({ glimmerMs: 0, samMs: 0, sparkMs: 0, segmenter: 'Sharp crop', tokensSavedPct: 0, piiRedacted: 0 });
+    setTelemetry({ glimmerMs: 0, samMs: 0, sparkMs: 0, voiceMs: 0, segmenter: 'Sharp crop', tokensSavedPct: 0, piiRedacted: 0 });
     setSteps(INITIAL_STEPS);
-    await fetchLiveLedger();
+    await Promise.all([fetchLiveLedger(), fetchAuditLedger()]);
     if (videoRef.current && cameraActive) videoRef.current.play();
-  }, [cameraActive, clearQueue, abortStream, fetchLiveLedger]);
-
-  const toggleMicListening = () => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) return alert('Chrome or Edge required for WebSpeech API.');
-
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'es-AR';
-    recognition.continuous = true;
-    recognition.interimResults = true;
-    recognition.onstart = () => setIsListeningMic(true);
-    recognition.onresult = (event: any) => {
-      let text = '';
-      for (let i = 0; i < event.results.length; i++) text += event.results[i][0].transcript + ' ';
-      setVoiceText(text.trim());
-    };
-    recognition.onend = () => {
-      setIsListeningMic(false);
-      setShouldAutoTrigger(true);
-    };
-    recognition.start();
-  };
-
-  useEffect(() => {
-    if (shouldAutoTrigger) {
-      setShouldAutoTrigger(false);
-      if (voiceText.trim().split(/\s+/).length >= 3 && phase === 'LIVE_IDLE') {
-        triggerOrchestration();
-      }
-    }
-  }, [shouldAutoTrigger, voiceText, phase, triggerOrchestration]);
+  }, [cameraActive, clearQueue, abortStream, cancelRecording, fetchLiveLedger, fetchAuditLedger]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -518,11 +558,19 @@ export default function App() {
       }
       if (e.code === 'KeyC') { e.preventDefault(); authorizeGuardrailClaim(); }
       if (e.code === 'KeyR') { e.preventDefault(); resetDemoState(); }
-      if (e.code === 'Escape') { e.preventDefault(); abortRun(); }
+      if (e.code === 'KeyL') { e.preventDefault(); setLedgerOpen((prev) => !prev); }
+      if (e.code === 'Escape') {
+        e.preventDefault();
+        if (ledgerOpen) {
+          setLedgerOpen(false);
+        } else {
+          abortRun();
+        }
+      }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [triggerOrchestration, authorizeGuardrailClaim, resetDemoState, phase, abortRun, voiceText]);
+  }, [triggerOrchestration, authorizeGuardrailClaim, resetDemoState, phase, abortRun, voiceText, ledgerOpen]);
 
   const renderMask = (m: SpatialMask) => {
     const [x, y, w, h] = m.bbox;
@@ -614,12 +662,37 @@ export default function App() {
             Live Cam
           </button>
           
+          <button
+            onClick={() => {
+              void fetchAuditLedger();
+              setLedgerOpen(true);
+            }}
+            title="Shortcut: [L] key — SHA-256 Audit Ledger & Compensating Undo"
+            className={`px-2.5 py-1.5 rounded border text-[10px] font-bold cursor-pointer flex items-center gap-1.5 uppercase tracking-wide transition-colors ${
+              auditIntegrity.blockCount > 0
+                ? 'border-emerald-600/60 bg-emerald-950/30 text-emerald-300 hover:bg-emerald-950/50'
+                : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500'
+            }`}
+          >
+            <Lock className="w-3.5 h-3.5 text-emerald-400" />
+            <span>[L] LEDGER ({auditIntegrity.blockCount})</span>
+          </button>
+
           <button onClick={resetDemoState} title="Shortcut: [R] key" className="px-2.5 py-1.5 rounded bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 flex items-center gap-1.5 cursor-pointer transition uppercase text-[10px] font-bold">
             <RotateCcw className="w-3.5 h-3.5 text-cyan-500" />
             <span>[R] RESET</span>
           </button>
         </div>
       </header>
+
+      <AuditLedgerDrawer
+        open={ledgerOpen}
+        onClose={() => setLedgerOpen(false)}
+        blocks={auditBlocks}
+        integrity={auditIntegrity}
+        undoingTxId={undoingTxId}
+        onUndo={handleUndoTx}
+      />
 
       <main className="flex-1 grid grid-cols-12 gap-3 p-3 overflow-hidden min-h-0">
         
@@ -680,7 +753,7 @@ export default function App() {
                 try {
                   const res = await fetch(apiUrl('/api/triage/resolve'), {
                     method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                    headers: apiHeaders({ 'Content-Type': 'application/json' }),
                     body: JSON.stringify({ maskId: selectedMaskId, sku: cleanSku, name: rawLabel, action: 'STOCK', delta: 1 }),
                   });
                   const data = await res.json();
@@ -691,6 +764,7 @@ export default function App() {
                       )
                     );
                   }
+                  void fetchAuditLedger();
                 } catch (err) {
                   console.error('Triage stock resolve failed', err);
                 }
@@ -758,7 +832,7 @@ export default function App() {
                         try {
                           const res = await fetch(apiUrl('/api/triage/resolve'), {
                             method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
+                            headers: apiHeaders({ 'Content-Type': 'application/json' }),
                             body: JSON.stringify({
                               maskId: selectedMaskId,
                               sku: confirmedSku,
@@ -772,6 +846,7 @@ export default function App() {
                           if (data.ok && data.claim) {
                             setLatestClaim(data.claim);
                           }
+                          void fetchAuditLedger();
                         } catch (err) {
                           console.error('Triage claim resolve failed', err);
                         }
@@ -792,26 +867,65 @@ export default function App() {
           </div>
 
           <div className="flex gap-2">
-            <button onClick={toggleMicListening} className={`px-4 py-2 rounded-md border text-[11px] font-bold flex items-center gap-2 tracking-wide transition-all ${isListeningMic ? 'border-rose-500 bg-rose-950/50 text-rose-300 shadow-[0_0_12px_rgba(244,63,94,0.3)]' : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-slate-500'}`}>
-              <Mic className={`w-4 h-4 ${isListeningMic ? 'animate-pulse' : ''}`} /> MIC
+            <button
+              onClick={toggleRecording}
+              disabled={voiceStatus === 'TRANSCRIBING'}
+              title="Muse Voice Transcribe 1.0 (24kHz PCM WAV + Dynamic ERP SKU Vocabulary Biasing)"
+              className={`px-3.5 py-2 rounded-md border text-[11px] font-bold flex items-center gap-2 tracking-wide transition-all cursor-pointer ${
+                voiceStatus === 'RECORDING'
+                  ? 'border-rose-500 bg-rose-950/60 text-rose-200 shadow-[0_0_14px_rgba(244,63,94,0.4)]'
+                  : voiceStatus === 'TRANSCRIBING'
+                  ? 'border-cyan-500 bg-cyan-950/50 text-cyan-200'
+                  : 'border-slate-700 bg-slate-900 text-slate-300 hover:border-cyan-500/60'
+              }`}
+            >
+              {voiceStatus === 'TRANSCRIBING' ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin text-cyan-400" />
+                  <span>MUSE VOICE…</span>
+                </>
+              ) : voiceStatus === 'RECORDING' ? (
+                <>
+                  <Mic className="w-4 h-4 text-rose-400 animate-pulse" />
+                  <span>STOP & TRANSCRIBE</span>
+                </>
+              ) : (
+                <>
+                  <Mic className="w-4 h-4 text-cyan-400" />
+                  <span>MIC</span>
+                </>
+              )}
             </button>
             
             {!isBusy ? (
-              <button onClick={triggerOrchestration} className="flex-1 py-2 rounded-md bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-extrabold text-[11px] uppercase tracking-widest flex items-center justify-center gap-2 transition-all shadow-[0_0_15px_rgba(6,182,212,0.4)]">
+              <button onClick={triggerOrchestration} className="flex-1 py-2 rounded-md bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-extrabold text-[11px] uppercase tracking-widest flex items-center justify-center gap-2 transition-all shadow-[0_0_15px_rgba(6,182,212,0.4)] cursor-pointer">
                 <Play className="w-4 h-4 fill-slate-950" /> RUN SPATIAL ORCHESTRATION (SPACEBAR)
               </button>
             ) : (
-              <button onClick={abortRun} className="flex-1 py-2 rounded-md bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-[11px] uppercase tracking-widest flex items-center justify-center gap-2 transition-all shadow-[0_0_15px_rgba(225,29,72,0.4)]">
+              <button onClick={abortRun} className="flex-1 py-2 rounded-md bg-rose-600 hover:bg-rose-500 text-white font-extrabold text-[11px] uppercase tracking-widest flex items-center justify-center gap-2 transition-all shadow-[0_0_15px_rgba(225,29,72,0.4)] cursor-pointer">
                 <XCircle className="w-4 h-4" /> [ESC] ABORT ORCHESTRATION
               </button>
             )}
           </div>
 
-          <textarea
-            value={voiceText}
-            onChange={(e) => setVoiceText(e.target.value)}
-            className="w-full bg-[#050608] border border-slate-800 rounded-md p-3 text-[11px] font-mono text-slate-300 resize-none h-20 shadow-inner focus:outline-none focus:border-cyan-800 transition-colors"
-          />
+          <div className="relative">
+            {voiceStatus === 'RECORDING' ? (
+              <div className="mb-1 flex items-center justify-between text-[9px] font-mono uppercase tracking-wider text-rose-300 bg-rose-950/40 border border-rose-700/50 rounded px-2 py-0.5">
+                <span>● REC 24kHz PCM WAV → MUSE VOICE TRANSCRIBE 1.0 (SKU VOCAB BIAS)</span>
+                <span>CLICK STOP WHEN DONE</span>
+              </div>
+            ) : voiceBanner ? (
+              <div className="mb-1 flex items-center justify-between text-[9px] font-mono text-cyan-300 bg-cyan-950/30 border border-cyan-800/40 rounded px-2 py-0.5">
+                <span className="truncate">✓ {voiceBanner}</span>
+                <button onClick={() => setVoiceBanner(null)} className="text-slate-400 hover:text-white ml-2 cursor-pointer">✕</button>
+              </div>
+            ) : null}
+            <textarea
+              value={voiceText}
+              onChange={(e) => setVoiceText(e.target.value)}
+              className="w-full bg-[#050608] border border-slate-800 rounded-md p-2.5 text-[11px] font-mono text-slate-300 resize-none h-[4.5rem] shadow-inner focus:outline-none focus:border-cyan-800 transition-colors"
+            />
+          </div>
         </section>
 
         {/* MIDDLE COLUMN: DAG & TERMINAL */}
@@ -963,21 +1077,21 @@ export default function App() {
           </div>
 
           {/* MUSE WONDER POLICY & QUICKJS WASM SANDBOX CARD */}
-          <div className="border border-slate-800 bg-[#0A0C10] rounded-lg p-3 shadow-inner shrink-0 flex flex-col min-h-0">
-            <div className="text-[10px] uppercase tracking-widest font-bold text-slate-400 border-b border-slate-800/80 pb-2 mb-2 flex items-center gap-2">
+          <div className="border border-slate-800 bg-[#0A0C10] rounded-lg p-2.5 shadow-inner shrink-0 flex flex-col min-h-0">
+            <div className="text-[10px] uppercase tracking-widest font-bold text-slate-400 border-b border-slate-800/80 pb-1.5 mb-1.5 flex items-center gap-2">
               <Terminal className="w-3.5 h-3.5 text-amber-400" /> MUSE WONDER POLICY SANDBOX (QuickJS WASM)
             </div>
             {vmExecution ? (
-              <div className="space-y-1.5">
-                <pre className="text-[9px] font-mono text-cyan-300 bg-[#050608] p-2 rounded border border-slate-800/80 overflow-x-auto leading-relaxed max-h-32 overflow-y-auto">
+              <div className="space-y-1">
+                <pre className="text-[9px] font-mono text-cyan-300 bg-[#050608] p-2 rounded border border-slate-800/80 overflow-x-auto leading-snug max-h-[4.25rem] overflow-y-auto">
                   {vmExecution.executedCode}
                 </pre>
-                <div className="text-[10px] font-mono text-emerald-400">
+                <div className="text-[9.5px] font-mono text-emerald-400 truncate">
                   {`// Output: $${Number(vmExecution.finalPrice).toFixed(2)} USD | engine: ${vmExecution.sandboxEngine || 'quickjs-wasm'} | invariants: ${vmExecution.invariantsPassed !== false ? 'PASS' : 'FAIL'} | fallback: ${Boolean(vmExecution.usedFallback)}`}
                 </div>
               </div>
             ) : (
-              <div className="text-[10px] text-slate-600 text-center py-3 italic">Awaiting WASM policy sandbox execution...</div>
+              <div className="text-[10px] text-slate-600 text-center py-2.5 italic">Awaiting WASM policy sandbox execution...</div>
             )}
           </div>
         </section>
