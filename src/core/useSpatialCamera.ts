@@ -76,6 +76,7 @@ export function useSpatialCamera() {
     sceneImgRef,
     uploadedImage,
     sourceDims,
+    setSourceDims,
     cameraActive,
     startCamera,
     handleImageUpload,

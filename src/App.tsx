@@ -12,7 +12,8 @@ import {
   Play,
   AlertTriangle,
   Scan,
-  CheckCircle2
+  CheckCircle2,
+  Download
 } from 'lucide-react';
 
 import {
@@ -69,6 +70,7 @@ export default function App() {
     startCamera,
     handleImageUpload,
     captureFrameBase64,
+    setSourceDims
   } = useSpatialCamera();
 
   const { runStream, abortStream } = useKinetixStream();
@@ -78,11 +80,12 @@ export default function App() {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [stageSize, setStageSize] = useState({ w: 0, h: 0 });
-  const [isFrozen, setIsFrozen] = useState(false);
+  const [phase, setPhase] = useState<'LIVE_IDLE' | 'SCANNING_SCENE' | 'EXECUTING_DAG' | 'FRAME_LOCKED' | 'ABORTED'>('LIVE_IDLE');
   const [flashEffect, setFlashEffect] = useState(false);
-  const [isRunning, setIsRunning] = useState(false);
   const [isListeningMic, setIsListeningMic] = useState(false);
   const [shouldAutoTrigger, setShouldAutoTrigger] = useState(false);
+
+  const isBusy = phase === 'SCANNING_SCENE' || phase === 'EXECUTING_DAG';
 
   const [masks, setMasks] = useState<SpatialMask[]>([]);
   const [activePulse, setActivePulse] = useState<{ id: string; actionText: string } | null>(null);
@@ -167,11 +170,11 @@ export default function App() {
   };
 
   const triggerOrchestration = useCallback(async () => {
-    // Abortar proactivamente cualquier stream anterior fantasma
+    if (phase === 'EXECUTING_DAG' || phase === 'SCANNING_SCENE') return;
+
     abortStream();
 
-    setIsRunning(true);
-    setIsFrozen(true);
+    setPhase('SCANNING_SCENE');
     setFlashEffect(true);
     setTimeout(() => setFlashEffect(false), 150);
 
@@ -235,6 +238,7 @@ export default function App() {
                 : `${incomingObjects.length} actionable objects cropped`,
             });
             updateStep('spark_plan', { status: 'RUNNING' });
+            setPhase('EXECUTING_DAG');
           });
         }
 
@@ -321,7 +325,7 @@ export default function App() {
 
         if (event === 'ORCHESTRATION_COMPLETE') {
           enqueue(() => {
-            setIsRunning(false);
+            setPhase('FRAME_LOCKED');
             setSteps((prev) => prev.map(s => s.status === 'RUNNING' ? { ...s, status: 'PENDING', detail: 'Tool skipped (not requested by prompt)' } : s));
             speakTactical("Spatial lock complete. Actionable assets indexed. Check reasoning trace for zero-trust interventions.");
 
@@ -334,18 +338,16 @@ export default function App() {
       (err) => {
         console.error('SSE Stream Error:', err);
         enqueue(() => {
-          setIsRunning(false);
-          setIsFrozen(false);
+          setPhase('ABORTED');
         });
       }
     );
-  }, [isRunning, cameraActive, uploadedImage, voiceText, captureFrameBase64, clearQueue, enqueue, speakTactical, runStream, updateStep, fetchLiveLedger]);
+  }, [phase, cameraActive, uploadedImage, voiceText, captureFrameBase64, clearQueue, enqueue, speakTactical, runStream, updateStep, fetchLiveLedger]);
 
   const abortRun = useCallback(() => {
     abortStream();
     clearQueue();
-    setIsRunning(false);
-    setIsFrozen(false);
+    setPhase('ABORTED');
     setActivePulse(null);
     setSteps((prev) => prev.map((s) => (s.status === 'RUNNING' || s.status === 'PENDING' ? { ...s, status: 'FAILED', detail: 'Aborted by operator' } : s)));
   }, [abortStream, clearQueue]);
@@ -373,8 +375,7 @@ export default function App() {
     setLatestClaim(null);
     setLatestCatalog(null);
     setVmExecution(null);
-    setIsFrozen(false);
-    setIsRunning(false);
+    setPhase('LIVE_IDLE');
     setActivePulse(null);
     clearQueue();
     abortStream();
@@ -409,11 +410,11 @@ export default function App() {
   useEffect(() => {
     if (shouldAutoTrigger) {
       setShouldAutoTrigger(false);
-      if (voiceText.trim().split(/\s+/).length >= 3 && !isRunning) {
+      if (voiceText.trim().split(/\s+/).length >= 3 && phase === 'LIVE_IDLE') {
         triggerOrchestration();
       }
     }
-  }, [shouldAutoTrigger, voiceText, isRunning, triggerOrchestration]);
+  }, [shouldAutoTrigger, voiceText, phase, triggerOrchestration]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -430,7 +431,7 @@ export default function App() {
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [triggerOrchestration, authorizeGuardrailClaim, resetDemoState, isRunning, abortRun, voiceText]);
+  }, [triggerOrchestration, authorizeGuardrailClaim, resetDemoState, phase, abortRun, voiceText]);
 
   const renderMask = (m: SpatialMask) => {
     const [x, y, w, h] = m.bbox;
@@ -504,7 +505,19 @@ export default function App() {
           <button onClick={() => fileInputRef.current?.click()} className={`px-2.5 py-1.5 rounded border text-[10px] font-bold cursor-pointer flex items-center gap-1.5 uppercase tracking-wide transition-colors ${uploadedImage ? 'border-cyan-500 bg-cyan-950/40 text-cyan-300' : 'border-slate-700 text-slate-400 hover:border-slate-500'}`}>
             <Upload className="w-3.5 h-3.5" /> Upload Image
           </button>
-          <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => { handleImageUpload(e.target.files?.[0]); e.target.value = ''; }} />
+          <input ref={fileInputRef} type="file" accept="image/*" className="hidden" onChange={(e) => {
+            handleImageUpload(e.target.files?.[0]);
+            setPhase('LIVE_IDLE');
+            setMasks([]);
+            setLatestCatalog(null);
+            setLatestClaim(null);
+            setVmExecution(null);
+            setReasoningTrace('');
+            setSteps(INITIAL_STEPS);
+            abortStream();
+            clearQueue();
+            e.target.value = '';
+          }} />
           
           <button onClick={startCamera} className={`px-2.5 py-1.5 rounded border text-[10px] font-bold cursor-pointer uppercase tracking-wide transition-colors ${cameraActive ? 'border-cyan-500 bg-cyan-950/40 text-cyan-300' : 'border-slate-700 text-slate-400 hover:border-slate-500'}`}>
             Live Cam
@@ -525,8 +538,8 @@ export default function App() {
             <span className="flex items-center gap-2 font-bold text-slate-300">
               <Camera className="w-4 h-4 text-cyan-500" /> WORKSPACE SPATIAL FEED
             </span>
-            <span className={`px-2 py-0.5 rounded font-bold border ${isRunning ? 'bg-amber-950/80 text-amber-300 border-amber-500/50 animate-pulse' : isFrozen ? 'bg-rose-950/80 text-rose-300 border-rose-500/50' : 'bg-emerald-950/80 text-emerald-400 border-emerald-500/50'}`}>
-              {isRunning ? 'SCANNING SCENE' : isFrozen ? 'FRAME LOCKED' : 'LIVE FEED'}
+            <span className={`px-2 py-0.5 rounded font-bold border ${phase === 'SCANNING_SCENE' ? 'bg-amber-950/80 text-amber-300 border-amber-500/50 animate-pulse' : (phase === 'FRAME_LOCKED' || phase === 'EXECUTING_DAG') ? 'bg-rose-950/80 text-rose-300 border-rose-500/50' : 'bg-emerald-950/80 text-emerald-400 border-emerald-500/50'}`}>
+              {phase === 'SCANNING_SCENE' ? 'SCANNING SCENE' : (phase === 'FRAME_LOCKED' || phase === 'EXECUTING_DAG') ? 'FRAME LOCKED' : 'LIVE FEED'}
             </span>
           </div>
 
@@ -555,7 +568,7 @@ export default function App() {
               </button>
             )}
 
-            {isRunning && masks.length === 0 && (cameraActive || uploadedImage) && (
+            {phase === 'SCANNING_SCENE' && masks.length === 0 && (cameraActive || uploadedImage) && (
               <div className="absolute inset-0 pointer-events-none overflow-hidden bg-[linear-gradient(to_right,#22d3ee08_1px,transparent_1px),linear-gradient(to_bottom,#22d3ee08_1px,transparent_1px)] bg-[size:32px_32px]">
                 <div className="absolute left-0 right-0 h-[3px] bg-cyan-400 shadow-[0_0_24px_#22d3ee]" style={{ animation: 'kinetix-scan 2s ease-in-out infinite' }} />
                 <div className="absolute bottom-4 right-4 text-[10px] font-mono tracking-widest text-cyan-300 bg-slate-950/80 border border-cyan-500/40 px-2 py-1 rounded shadow-lg flex items-center gap-2">
@@ -679,7 +692,7 @@ export default function App() {
               <Mic className={`w-4 h-4 ${isListeningMic ? 'animate-pulse' : ''}`} /> MIC
             </button>
             
-            {!isRunning ? (
+            {phase === 'LIVE_IDLE' || phase === 'ABORTED' ? (
               <button onClick={triggerOrchestration} className="flex-1 py-2 rounded-md bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-extrabold text-[11px] uppercase tracking-widest flex items-center justify-center gap-2 transition-all shadow-[0_0_15px_rgba(6,182,212,0.4)]">
                 <Play className="w-4 h-4 fill-slate-950" /> TRIGGER GOLDEN PATH (SPACEBAR)
               </button>
@@ -700,7 +713,7 @@ export default function App() {
         {/* MIDDLE COLUMN: DAG & TERMINAL */}
         <section className="col-span-4 flex flex-col gap-3 overflow-y-auto min-h-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           <AgentDagPanel steps={steps} piiRedacted={telemetry.piiRedacted} />
-          <ReasoningTerminal trace={reasoningTrace} isRunning={isRunning} />
+          <ReasoningTerminal trace={reasoningTrace} isRunning={phase !== 'LIVE_IDLE' && phase !== 'ABORTED'} />
         </section>
 
         {/* RIGHT COLUMN: ERP MICRO-INTERACTIONS */}
@@ -804,9 +817,16 @@ export default function App() {
                   </div>
                   <div className="space-y-1">
                     <div className="text-[8px] uppercase tracking-wider text-slate-500 font-bold">AFTER // MUSE IMAGE 8K</div>
-                    <div className="relative rounded border border-cyan-800/60 overflow-hidden aspect-video bg-[#050608] shadow-[0_0_12px_rgba(34,211,238,0.15)]">
+                    <div className="relative rounded border border-cyan-800/60 overflow-hidden aspect-video bg-[#050608] shadow-[0_0_12px_rgba(34,211,238,0.15)] group">
                        <img src={latestCatalog.studioImageUrl} alt="Studio" className="w-full h-full object-cover" />
                        <div className="absolute top-1 right-1 bg-cyan-950/80 backdrop-blur border border-cyan-500/50 px-1 py-0.5 rounded-[2px] text-[8px] font-mono text-cyan-300">SYNTH_8K</div>
+                       <a
+                         href={latestCatalog.studioImageUrl}
+                         download={`Studio-Render-${latestCatalog.title.replace(/\s+/g, '-')}.jpg`}
+                         className="absolute inset-0 bg-cyan-950/60 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center text-cyan-300 font-bold text-[10px] tracking-widest gap-2 backdrop-blur-sm cursor-pointer"
+                       >
+                         <Download className="w-4 h-4" /> DOWNLOAD 8K ASSET
+                       </a>
                     </div>
                   </div>
                 </div>
