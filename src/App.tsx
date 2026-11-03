@@ -107,7 +107,7 @@ export default function App() {
   });
 
   const [steps, setSteps] = useState<ExecutionStep[]>(INITIAL_STEPS);
-  const [inventory, setInventory] = useState<InventoryItem[]>([{ sku: 'LOADING', name: 'Syncing live ledger with Kinetix Backend...', stock: 0 }]);
+  const [inventory, setInventory] = useState<InventoryItem[]>([{ sku: 'LOADING', name: 'Syncing live ledger with Kinetix Backend...', stock: 0, baseCostUsd: 0, sellPriceUsd: 0 }]);
   const [latestClaim, setLatestClaim] = useState<SupplierClaim | null>(null);
   const [latestCatalog, setLatestCatalog] = useState<StudioCatalogResult | null>(null);
   const [vmExecution, setVmExecution] = useState<VmExecutionResult | null>(null);
@@ -291,7 +291,7 @@ export default function App() {
                       : item
                   );
                 }
-                return [{ sku: invResult.sku, name: invResult.name || 'Component', stock: invResult.stock ?? 1, sellPriceUsd: invResult.sellPriceUsd ?? 149.0, _highlightDelta: `+${invResult.delta ?? 1}` }, ...prev];
+                return [{ sku: invResult.sku, name: invResult.name || 'Component', stock: invResult.stock ?? 1, baseCostUsd: invResult.baseCostUsd ?? 90.0, sellPriceUsd: invResult.sellPriceUsd ?? 149.0, _highlightDelta: `+${invResult.delta ?? 1}` }, ...prev];
               });
               const mutationLine = `${invResult.sku}: ${invResult.previousStock ?? '?'}→${invResult.stock} (+${invResult.delta ?? 1})`;
               updateStep(tool, { status: 'MUTATED', detail: mutationLine });
@@ -600,7 +600,7 @@ export default function App() {
                       item.sku === cleanSku ? { ...item, stock: item.stock + 1, _highlightDelta: '+1' } : item
                     );
                   }
-                  return [{ sku: cleanSku, name: rawLabel, stock: 1, sellPriceUsd: 115.0, _highlightDelta: '+1' }, ...prev];
+                  return [{ sku: cleanSku, name: rawLabel, stock: 1, baseCostUsd: 85.0, sellPriceUsd: 115.0, _highlightDelta: '+1' }, ...prev];
                 });
                 updateStep('mutate_inventory', { status: 'MUTATED', detail: `Supervisor confirmed ${cleanSku} (+1)` });
                 setActivePulse({ id: selectedMaskId, actionText: hasPendingTriage ? 'CLEARED' : '+1 STOCK' });
@@ -666,11 +666,14 @@ export default function App() {
                         updateStep('quarantine_and_claim', { status: 'MUTATED', detail: `Supervisor claim opened for ${confirmedSku}` });
                         setLatestClaim({
                           id: `CLM-${Math.floor(100 + Math.random() * 900)}`,
+                          maskId: selectedMaskId,
+                          objectLabel: confirmedSku,
                           amountUsd: 85,
                           reason: `Defecto verificado en triaje sobre ${rawLabel} (${confirmedSku})`,
                           guardrailStatus: 'HELD_WAITING_VOICE_AUTH',
                           thresholdUsd: 50,
                           cropBase64: selectedMask?.cropBase64,
+                          timestamp: new Date().toISOString()
                         });
                         setActivePulse({ id: selectedMaskId, actionText: 'QUARANTINED' });
                         setMasks((prev) => prev.map((m) => (m.id === selectedMaskId ? { ...m, assignedActionStatus: 'QUARANTINED', label: confirmedSku } : m)));

@@ -32,6 +32,24 @@ export type MaskStatus =
   | 'CATALOG_SYNTH'
   | 'PII_REDACTED';
 
+export interface ExecutionStep {
+  id: string;
+  title: string;
+  model: string;
+  status: DagNodeStatus;
+  detail?: string;
+  latencyMs?: number;
+}
+
+export interface TelemetryState {
+  glimmerMs: number;
+  samMs: number;
+  sparkMs: number;
+  segmenter: string;
+  tokensSavedPct: number;
+  piiRedacted: number;
+}
+
 // --- 2. CONTRATO ESPACIAL Y ENTIDADES ERP ---
 export interface SpatialMask {
   id: string;
