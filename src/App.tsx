@@ -92,6 +92,7 @@ export default function App() {
   const [voiceBanner, setVoiceBanner] = useState<string | null>(null);
 
   const [ledgerOpen, setLedgerOpen] = useState(false);
+  const [backendModeBadge, setBackendModeBadge] = useState<'LIVE · BASETEN' | 'REPLAY · FIXTURE'>('LIVE · BASETEN');
   const [auditBlocks, setAuditBlocks] = useState<AuditLedgerBlock[]>([]);
   const [auditIntegrity, setAuditIntegrity] = useState<AuditChainIntegrity>({
     valid: true,
@@ -195,6 +196,16 @@ export default function App() {
   useEffect(() => {
     fetchLiveLedger();
     fetchAuditLedger();
+    fetch(apiUrl('/api/health'), { headers: apiHeaders() })
+      .then((r) => r.json())
+      .then((h) => {
+        if (h && (h.mode === 'REPLAY' || (!h.basetenConfigured && !h.metaApiConfigured))) {
+          setBackendModeBadge('REPLAY · FIXTURE');
+        } else {
+          setBackendModeBadge('LIVE · BASETEN');
+        }
+      })
+      .catch(() => {});
   }, [fetchLiveLedger, fetchAuditLedger]);
 
   useEffect(() => {
@@ -629,8 +640,12 @@ export default function App() {
           <span className="text-[10px] uppercase px-2 py-0.5 rounded bg-cyan-950/40 text-cyan-400 border border-cyan-800/60 font-semibold tracking-wider">
             SPATIAL ERP v2026.1 // KINETIX LABS
           </span>
-          <span className="text-[10px] px-2 py-0.5 rounded bg-amber-950/60 text-amber-400 border border-amber-500/40 font-bold tracking-wider">
-            LIVE · BASETEN
+          <span className={`text-[10px] px-2 py-0.5 rounded font-bold tracking-wider border ${
+            backendModeBadge === 'LIVE · BASETEN'
+              ? 'bg-amber-950/60 text-amber-400 border-amber-500/40'
+              : 'bg-emerald-950/60 text-emerald-300 border-emerald-500/40'
+          }`}>
+            {backendModeBadge}
           </span>
         </div>
 
@@ -1083,7 +1098,7 @@ export default function App() {
             </div>
             {vmExecution ? (
               <div className="space-y-1">
-                <pre className="text-[9px] font-mono text-cyan-300 bg-[#050608] p-2 rounded border border-slate-800/80 overflow-x-auto leading-snug max-h-[4.25rem] overflow-y-auto">
+                <pre className="text-[9px] font-mono text-cyan-300 bg-[#050608] p-2 rounded border border-slate-800/80 overflow-x-auto leading-snug max-h-[4.25rem] overflow-y-auto [scrollbar-width:thin] [scrollbar-color:#334155_#050608]">
                   {vmExecution.executedCode}
                 </pre>
                 <div className="text-[9.5px] font-mono text-emerald-400 truncate">

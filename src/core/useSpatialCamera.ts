@@ -1,6 +1,7 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 
 const MAX_FRAME_SIDE = 960;
+const DEFAULT_BENCHMARK_SCENE = '/hardware-bench1.jpg';
 
 export function useSpatialCamera() {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -10,6 +11,24 @@ export function useSpatialCamera() {
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [sourceDims, setSourceDims] = useState<{ w: number; h: number } | null>(null);
   const [cameraActive, setCameraActive] = useState(false);
+
+  const loadPresetImage = useCallback((url: string = DEFAULT_BENCHMARK_SCENE) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      sceneImgRef.current = img;
+      setSourceDims({ w: img.naturalWidth, h: img.naturalHeight });
+      setUploadedImage(url);
+      setCameraActive(false);
+    };
+    img.src = url;
+  }, []);
+
+  // Preload the canonical hardware workbench scene on mount so judges cloning the repo
+  // can press SPACE immediately without searching for a local test photo first.
+  useEffect(() => {
+    loadPresetImage(DEFAULT_BENCHMARK_SCENE);
+  }, [loadPresetImage]);
 
   const startCamera = async () => {
     try {
@@ -79,6 +98,7 @@ export function useSpatialCamera() {
     setSourceDims,
     cameraActive,
     startCamera,
+    loadPresetImage,
     handleImageUpload,
     captureFrameBase64,
   };
